@@ -606,7 +606,7 @@ export const AssessmentPreflight: React.FC = () => {
                 <span>How to Allow Camera &amp; Microphone in your Browser:</span>
               </div>
               <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-100/90 pl-1">
-                <li>Look at the top URL address bar (next to <strong>localhost</strong> or the site URL).</li>
+                <li>Look at the top URL address bar (next to the site URL or permission icon).</li>
                 <li>Click the <strong>Lock (🔒) or Tune/Settings</strong> icon.</li>
                 <li>Find <strong>Camera</strong> and <strong>Microphone</strong>, and switch them to <strong>Allow</strong>.</li>
                 <li>Click <strong>Allow Camera &amp; Microphone</strong> again or reload the page.</li>

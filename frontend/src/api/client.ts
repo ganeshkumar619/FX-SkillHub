@@ -1,18 +1,35 @@
 import axios from 'axios';
 
-// VITE_API_BASE_URL must be set in .env.production for all production builds.
-// Local development falls back to '/api' (Vite dev proxy handles forwarding).
-// In production, a missing VITE_API_BASE_URL causes an EXPLICIT ERROR so Render's
-// build/runtime logs immediately show the misconfiguration — no silent /api fallback.
-const _rawBase = import.meta.env.VITE_API_BASE_URL;
-if (import.meta.env.PROD && !_rawBase) {
-  throw new Error(
-    '[FX SkillHub] VITE_API_BASE_URL is not set. ' +
-    'Add it to frontend/.env.production before building for production. ' +
-    'Expected value: https://fx-skillhub.onrender.com/api'
-  );
-}
-const API_BASE_URL: string = (_rawBase ? _rawBase.replace(/\/+$/, '') : '') || '/api';
+const PRODUCTION_API_URL = 'https://fx-skillhub.onrender.com/api';
+
+/**
+ * Resolves the API Base URL with strict production rules:
+ * 1. Production builds MUST NEVER use localhost, 127.0.0.1, or bare relative '/api'.
+ * 2. If VITE_API_BASE_URL is unset, empty, or mistakenly contains localhost/127.0.0.1 in production,
+ *    it strictly defaults to the deployed Render backend: https://fx-skillhub.onrender.com/api.
+ * 3. Local development continues using '/api' (forwarded by Vite dev proxy) or custom dev URL.
+ */
+const resolveApiBaseUrl = (): string => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL;
+
+  if (import.meta.env.PROD) {
+    if (envUrl && typeof envUrl === 'string') {
+      const trimmed = envUrl.trim().replace(/\/+$/, '');
+      if (!trimmed.includes('localhost') && !trimmed.includes('127.0.0.1') && trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+    return PRODUCTION_API_URL;
+  }
+
+  // Local development mode:
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    return envUrl.trim().replace(/\/+$/, '');
+  }
+  return '/api';
+};
+
+export const API_BASE_URL: string = resolveApiBaseUrl();
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,

@@ -12,6 +12,14 @@ export default defineConfig(({ mode }) => {
   // Fallback keeps existing behaviour: proxy to local Django dev server.
   const backendTarget = env.VITE_BACKEND_URL || 'http://127.0.0.1:8000'
 
+  // Safeguard: In production builds, never allow localhost or 127.0.0.1 for API base URL
+  if (mode === 'production') {
+    const rawApi = env.VITE_API_BASE_URL || process.env.VITE_API_BASE_URL;
+    if (!rawApi || rawApi.includes('localhost') || rawApi.includes('127.0.0.1')) {
+      process.env.VITE_API_BASE_URL = 'https://fx-skillhub.onrender.com/api';
+    }
+  }
+
   return {
     plugins: [
       react(),
