@@ -1,13 +1,17 @@
+import time
 import hashlib
-from django.core.mail import EmailMessage
+import logging
+from django.core.mail import EmailMessage, get_connection
 from django.conf import settings
 from django.utils import timezone
 from .models import EmailLog
 
+logger = logging.getLogger(__name__)
+
 
 class EmailNotificationService:
     @classmethod
-    def send_certificate_notification(cls, certificate):
+    def send_certificate_notification(cls, certificate, force: bool = False):
         """
         Dispatches certificate completion email with PDF attachment and idempotency protection.
         Subject format: "Your FX SkillHub Certificate — [COURSE NAME]"
@@ -18,9 +22,9 @@ class EmailNotificationService:
 
         idempotency_key = hashlib.md5(f"cert_email_{certificate.id}".encode('utf-8')).hexdigest()
         
-        # Idempotency check: avoid double sends
+        # Idempotency check: avoid double sends unless forced
         existing_log = EmailLog.objects.filter(idempotency_key=idempotency_key).first()
-        if existing_log and existing_log.status == 'SENT':
+        if existing_log and existing_log.status == 'SENT' and not force:
             return existing_log
 
         subject = f"Your FX SkillHub Certificate — {certificate.course.title}"
@@ -43,25 +47,31 @@ class EmailNotificationService:
             f"Francis Xavier Engineering College, Tirunelveli"
         )
 
-        email_log, _ = EmailLog.objects.get_or_create(
-            idempotency_key=idempotency_key,
-            defaults={
-                'recipient_email': recipient,
-                'subject': subject,
-                'certificate': certificate,
-                'status': 'PENDING'
-            }
-        )
+        email_log = existing_log
+        if not email_log:
+            email_log, _ = EmailLog.objects.get_or_create(
+                idempotency_key=idempotency_key,
+                defaults={
+                    'recipient_email': recipient,
+                    'subject': subject,
+                    'certificate': certificate,
+                    'status': 'PENDING'
+                }
+            )
 
         try:
             from certificates.pdf_service import CertificatePDFService
             pdf_bytes = CertificatePDFService.render_pdf(certificate)
 
+            timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+            connection = get_connection(timeout=timeout)
+
             email = EmailMessage(
                 subject=subject,
                 body=message_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[recipient]
+                to=[recipient],
+                connection=connection
             )
             email.attach(
                 filename=f"FXEC_Certificate_{certificate.certificate_number}.pdf",
@@ -72,19 +82,23 @@ class EmailNotificationService:
 
             email_log.status = 'SENT'
             email_log.sent_at = timezone.now()
-            email_log.save(update_fields=['status', 'sent_at'])
+            email_log.error_message = None
+            email_log.save(update_fields=['status', 'sent_at', 'error_message'])
+            logger.info(f"Certificate email successfully dispatched to {recipient} for {certificate.certificate_number}")
         except Exception as e:
+            err_str = str(e)
             email_log.status = 'FAILED'
-            email_log.error_message = str(e)
+            email_log.error_message = err_str
             email_log.save(update_fields=['status', 'error_message'])
+            logger.error(f"Failed to dispatch certificate email to {recipient}: {err_str}")
 
         return email_log
 
     @classmethod
-    def send_otp_verification_email(cls, email: str, otp_plain: str, student_name: str = "Student"):
+    def send_otp_verification_email(cls, email: str, otp_plain: str, student_name: str = "Student") -> bool:
         """
         Dispatches time-limited 6-digit OTP to student's institutional mailbox.
-        Also tracks delivery status in EmailLog and console output for verification.
+        Tracks delivery status in EmailLog. Plaintext OTP is NEVER logged.
         """
         if not email:
             return False
@@ -108,13 +122,7 @@ class EmailNotificationService:
             f"Tirunelveli - 627 003, Tamil Nadu"
         )
 
-        # Print OTP to server console for instant verification/debugging
-        print(f"\n=======================================================")
-        print(f" [FX SKILLHUB OTP VERIFICATION DISPATCH]")
-        print(f" Recipient: {email}")
-        print(f" Verification Code: {otp_plain}")
-        print(f" Timestamp: {timezone.now().isoformat()}")
-        print(f"=======================================================\n")
+        logger.info(f"Initiating OTP verification email dispatch to recipient: {email}")
 
         idempotency_key = hashlib.md5(f"otp_{email}_{timezone.now().timestamp()}_{otp_plain}".encode('utf-8')).hexdigest()
         email_log = None
@@ -129,17 +137,22 @@ class EmailNotificationService:
             pass
 
         try:
+            timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+            connection = get_connection(timeout=timeout)
             email_msg = EmailMessage(
                 subject=subject,
                 body=message_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[email]
+                to=[email],
+                connection=connection
             )
             email_msg.send(fail_silently=False)
             if email_log:
                 email_log.status = 'SENT'
                 email_log.sent_at = timezone.now()
-                email_log.save(update_fields=['status', 'sent_at'])
+                email_log.error_message = None
+                email_log.save(update_fields=['status', 'sent_at', 'error_message'])
+            logger.info(f"OTP verification email successfully dispatched to {email}")
             return True
         except Exception as e:
             err_str = str(e)
@@ -147,8 +160,6 @@ class EmailNotificationService:
                 email_log.status = 'FAILED'
                 email_log.error_message = err_str
                 email_log.save(update_fields=['status', 'error_message'])
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Failed to dispatch OTP email to {email}: {err_str}")
             return False
 
@@ -162,8 +173,8 @@ class EmailNotificationService:
         login_url: str
     ) -> bool:
         """
-        Dispatches account activation invitation to the exact provisioned Faculty email address.
-        Tracks delivery in EmailLog. Plaintext tokens are NEVER persisted or logged.
+        Dispatches account activation invitation to the provisioned Faculty email address.
+        Tracks delivery in EmailLog. Tokens are NEVER logged.
         """
         if not email:
             return False
@@ -192,13 +203,7 @@ class EmailNotificationService:
             f"Francis Xavier Engineering College"
         )
 
-        print(f"\n=======================================================")
-        print(f" [FX SKILLHUB FACULTY INVITATION DISPATCH]")
-        print(f" Recipient: {email}")
-        print(f" Faculty Name: {faculty_name}")
-        print(f" Activation Link: {activation_url}")
-        print(f" Timestamp: {timezone.now().isoformat()}")
-        print(f"=======================================================\n")
+        logger.info(f"Initiating Faculty invitation dispatch to recipient: {email}")
 
         idempotency_key = hashlib.md5(
             f"fac_invite_{email}_{timezone.now().timestamp()}".encode('utf-8')
@@ -216,17 +221,22 @@ class EmailNotificationService:
             pass
 
         try:
+            timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+            connection = get_connection(timeout=timeout)
             email_msg = EmailMessage(
                 subject=subject,
                 body=message_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[email]
+                to=[email],
+                connection=connection
             )
             email_msg.send(fail_silently=False)
             if email_log:
                 email_log.status = 'SENT'
                 email_log.sent_at = timezone.now()
-                email_log.save(update_fields=['status', 'sent_at'])
+                email_log.error_message = None
+                email_log.save(update_fields=['status', 'sent_at', 'error_message'])
+            logger.info(f"Faculty invitation email successfully dispatched to {email}")
             return True
         except Exception as e:
             err_str = str(e)
@@ -234,7 +244,131 @@ class EmailNotificationService:
                 email_log.status = 'FAILED'
                 email_log.error_message = err_str
                 email_log.save(update_fields=['status', 'error_message'])
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Failed to dispatch Faculty invitation email to {email}: {err_str}")
             return False
+
+    @classmethod
+    def test_smtp_connection(cls) -> dict:
+        """
+        Tests the low-level connection and authentication to the configured SMTP server
+        without actually sending an email.
+        """
+        start_time = time.time()
+        backend_name = getattr(settings, 'EMAIL_BACKEND', '')
+        host = getattr(settings, 'EMAIL_HOST', '')
+        port = getattr(settings, 'EMAIL_PORT', 587)
+        use_tls = getattr(settings, 'EMAIL_USE_TLS', True)
+        use_ssl = getattr(settings, 'EMAIL_USE_SSL', False)
+        user = getattr(settings, 'EMAIL_HOST_USER', '')
+        password = getattr(settings, 'EMAIL_HOST_PASSWORD', '')
+        timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+
+        result = {
+            'backend': backend_name,
+            'host': host,
+            'port': port,
+            'use_tls': use_tls,
+            'use_ssl': use_ssl,
+            'user_configured': bool(user),
+            'password_configured': bool(password),
+            'connected': False,
+            'authenticated': False,
+            'error_stage': None,
+            'error_type': None,
+            'error_message': None,
+            'latency_ms': None
+        }
+
+        # Check configuration
+        if 'smtp' in backend_name.lower():
+            if not user or not password:
+                result['error_stage'] = 'CONFIG'
+                result['error_type'] = 'MissingCredentials'
+                result['error_message'] = 'EMAIL_HOST_USER or EMAIL_HOST_PASSWORD is not set in environment.'
+                result['latency_ms'] = int((time.time() - start_time) * 1000)
+                return result
+
+        try:
+            connection = get_connection(timeout=timeout)
+            # Opening connection will establish socket, perform TLS handshake, and login
+            connection.open()
+            result['connected'] = True
+            result['authenticated'] = bool(getattr(connection, 'connection', None))
+            connection.close()
+        except Exception as e:
+            err_cls = e.__class__.__name__
+            err_msg = str(e)
+            result['error_type'] = err_cls
+            result['error_message'] = err_msg
+
+            if 'auth' in err_cls.lower() or '535' in err_msg:
+                result['error_stage'] = 'AUTHENTICATION'
+                result['connected'] = True
+            elif 'timeout' in err_cls.lower() or 'refused' in err_msg.lower():
+                result['error_stage'] = 'CONNECTION'
+            else:
+                result['error_stage'] = 'UNKNOWN'
+
+        result['latency_ms'] = int((time.time() - start_time) * 1000)
+        return result
+
+    @classmethod
+    def send_test_email(cls, recipient: str = None) -> dict:
+        """
+        Dispatches a diagnostic test email to the configured recipient and returns a
+        complete execution report. Never exposes secrets.
+        """
+        start_time = time.time()
+        conn_diag = cls.test_smtp_connection()
+        if not conn_diag['connected'] and conn_diag.get('error_stage') == 'CONFIG':
+            return {
+                **conn_diag,
+                'send_success': False,
+                'recipient': recipient or getattr(settings, 'EMAIL_HOST_USER', ''),
+                'total_latency_ms': conn_diag['latency_ms']
+            }
+
+        target = recipient or getattr(settings, 'EMAIL_HOST_USER', '') or getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+        if not target:
+            target = 'skills@francisxavier.ac.in'
+
+        report = {
+            **conn_diag,
+            'recipient': target,
+            'send_success': False,
+        }
+
+        try:
+            timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+            connection = get_connection(timeout=timeout)
+            now_iso = timezone.now().isoformat()
+            test_msg = EmailMessage(
+                subject="FX SkillHub — Email Delivery Diagnostic Test",
+                body=(
+                    f"This is an automated diagnostic test message from FX SkillHub.\n\n"
+                    f"Timestamp: {now_iso}\n"
+                    f"Host: {conn_diag['host']}:{conn_diag['port']}\n"
+                    f"Backend: {conn_diag['backend']}\n"
+                    f"Sender: {settings.DEFAULT_FROM_EMAIL}\n"
+                    f"Recipient: {target}\n\n"
+                    f"If you received this message, the FX SkillHub email delivery pipeline is operational."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[target],
+                connection=connection
+            )
+            test_msg.send(fail_silently=False)
+            report['send_success'] = True
+            report['connected'] = True
+            report['authenticated'] = True
+            report['error_stage'] = None
+            report['error_type'] = None
+            report['error_message'] = None
+        except Exception as e:
+            report['send_success'] = False
+            report['error_stage'] = report['error_stage'] or 'DISPATCH'
+            report['error_type'] = e.__class__.__name__
+            report['error_message'] = str(e)
+
+        report['total_latency_ms'] = int((time.time() - start_time) * 1000)
+        return report

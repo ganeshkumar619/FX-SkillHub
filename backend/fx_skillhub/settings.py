@@ -132,18 +132,27 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# Institutional Portal Domain (For QR codes)
-PUBLIC_PORTAL_URL = os.getenv('PUBLIC_PORTAL_URL', 'http://localhost:5173')
+# Institutional Portal Domain & Frontend URLs (For QR codes, invitation links & emails)
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://fx-skillhub-frontend.onrender.com' if not DEBUG else 'http://localhost:5173').rstrip('/')
+PUBLIC_PORTAL_URL = os.getenv('PUBLIC_PORTAL_URL', FRONTEND_URL).rstrip('/')
 
 # Email Configuration
-EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '').replace(' ', '')
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend' if (EMAIL_HOST_USER or not DEBUG) else 'django.core.mail.backends.console.EmailBackend'
+)
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() in ('true', '1', 't')
 EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'False').lower() in ('true', '1', 't')
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '').replace(' ', '')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'FX SkillHub <skills@francisxavier.ac.in>')
+DEFAULT_FROM_EMAIL = os.getenv(
+    'DEFAULT_FROM_EMAIL',
+    f'FX SkillHub <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'FX SkillHub <skills@francisxavier.ac.in>'
+)
+EMAIL_TIMEOUT = int(os.getenv('EMAIL_TIMEOUT', 10))
+
 
 # Structured Server Logging
 LOGGING = {

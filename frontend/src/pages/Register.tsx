@@ -164,7 +164,11 @@ export const Register: React.FC = () => {
       setRegisteredEmail(cleanEmail);
       setStep('OTP');
       setCooldown(60); // 60s cooldown before resend
-      setSuccessMsg(res.data.message || `A verification code was dispatched to ${cleanEmail}`);
+      if (res.data?.email_sent === false) {
+        setError(res.data.message || 'Verification code generated, but email delivery failed. Please check server email delivery settings.');
+      } else {
+        setSuccessMsg(res.data.message || `A verification code was dispatched to ${cleanEmail}`);
+      }
     } catch (err: any) {
       const errData = err.response?.data;
       if (errData && typeof errData === 'object') {
@@ -221,7 +225,11 @@ export const Register: React.FC = () => {
         email: registeredEmail
       });
       setCooldown(60);
-      setSuccessMsg(res.data.message || 'A fresh verification code has been dispatched.');
+      if (res.data?.email_sent === false) {
+        setError(res.data.message || 'Fresh code generated, but email delivery failed. Please check SMTP delivery settings.');
+      } else {
+        setSuccessMsg(res.data.message || 'A fresh verification code has been dispatched.');
+      }
     } catch (err: any) {
       const errMsg = err.response?.data?.error || 'Failed to resend verification code. Please try again.';
       setError(errMsg);

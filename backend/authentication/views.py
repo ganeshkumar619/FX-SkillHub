@@ -90,13 +90,18 @@ class RegisterView(views.APIView):
                 metadata={'email': user.email, 'status': user.verification_status, 'email_sent': bool(email_sent)}
             )
 
+            if email_sent:
+                resp_msg = 'A 6-digit verification code has been dispatched to your institutional email. Please check your mailbox.'
+            else:
+                resp_msg = 'Student registration initiated, but the verification code email could not be delivered. Please check email delivery settings or click Resend Code.'
+
             return Response({
                 'status': 'PENDING_EMAIL_VERIFICATION',
                 'verification_status': user.verification_status,
                 'email': user.email,
                 'requires_otp': True,
                 'email_sent': bool(email_sent),
-                'message': 'A 6-digit verification code has been dispatched to your institutional email. Please check your mailbox.'
+                'message': resp_msg
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -264,8 +269,13 @@ class ResendOTPView(views.APIView):
             metadata={'email': user.email, 'resend_count': resend_num, 'email_sent': bool(email_sent)}
         )
 
+        if email_sent:
+            resp_msg = 'A fresh 6-digit verification code has been dispatched to your institutional email. Please check your mailbox.'
+        else:
+            resp_msg = 'A fresh verification code was generated, but the email could not be delivered. Please check email delivery settings or try again.'
+
         return Response({
-            'message': 'A fresh 6-digit verification code has been dispatched to your institutional email. Please check your mailbox.',
+            'message': resp_msg,
             'email': user.email,
             'resend_count': resend_num,
             'email_sent': bool(email_sent)
@@ -408,7 +418,11 @@ class AdminFacultyListView(views.APIView):
                 expires_at=expires_at
             )
 
-            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+            frontend_url = getattr(
+                settings,
+                'FRONTEND_URL',
+                'https://fx-skillhub-frontend.onrender.com' if not settings.DEBUG else 'http://localhost:5173'
+            ).rstrip('/')
             activation_url = f"{frontend_url}/activate-faculty/{raw_token}"
             login_url = f"{frontend_url}/login"
 
@@ -441,7 +455,7 @@ class AdminFacultyListView(views.APIView):
             if email_sent:
                 resp_msg = f"Faculty member '{faculty_name}' registered successfully. Invitation email sent."
             else:
-                resp_msg = "Faculty account created, but the invitation email could not be sent."
+                resp_msg = "Faculty account created, but the invitation email could not be sent. You can resend the invitation from the Faculty list."
 
             return Response({
                 'message': resp_msg,
@@ -573,7 +587,11 @@ class AdminFacultyResendInvitationView(views.APIView):
             expires_at=expires_at
         )
 
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+        frontend_url = getattr(
+            settings,
+            'FRONTEND_URL',
+            'https://fx-skillhub-frontend.onrender.com' if not settings.DEBUG else 'http://localhost:5173'
+        ).rstrip('/')
         activation_url = f"{frontend_url}/activate-faculty/{raw_token}"
         login_url = f"{frontend_url}/login"
 
