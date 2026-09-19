@@ -62,6 +62,7 @@ export const App: React.FC = () => {
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/auth/google/callback" element={<GoogleCallback />} />
+              <Route path="/auth/google/callback/" element={<GoogleCallback />} />
               <Route path="/activate-faculty/:token" element={<FacultyActivationPage />} />
               <Route path="/activate-faculty" element={<FacultyActivationPage />} />
               <Route path="/verify-certificate/:certificateId" element={<CertificateVerify />} />
