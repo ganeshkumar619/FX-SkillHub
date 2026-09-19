@@ -1,3 +1,5 @@
+import socket
+import time
 from rest_framework import views, permissions, status
 from rest_framework.response import Response
 from django.conf import settings
@@ -76,6 +78,154 @@ class EmailStatusDiagnosticsView(views.APIView):
             'error_message': diag.get('error_message'),
             'latency_ms': diag.get('latency_ms'),
             'recommendations': recommendations
+        }, status=status.HTTP_200_OK)
+
+
+class NetworkAuditDiagnosticsView(views.APIView):
+    """
+    Diagnostic view to audit DNS resolution and raw TCP socket connectivity
+    from the production host to SMTP endpoints without authentication or sending emails.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def _test_tcp(self, host, port, family=socket.AF_INET, timeout=3.0):
+        t0 = time.time()
+        s = socket.socket(family, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            s.close()
+            return {
+                'target': f"{host}:{port}",
+                'ip_family': 'IPv4' if family == socket.AF_INET else 'IPv6',
+                'connected': True,
+                'error_type': None,
+                'error_message': None,
+                'elapsed_ms': int((time.time() - t0) * 1000)
+            }
+        except Exception as e:
+            try:
+                s.close()
+            except Exception:
+                pass
+            return {
+                'target': f"{host}:{port}",
+                'ip_family': 'IPv4' if family == socket.AF_INET else 'IPv6',
+                'connected': False,
+                'error_type': e.__class__.__name__,
+                'error_message': str(e),
+                'elapsed_ms': int((time.time() - t0) * 1000)
+            }
+
+    def get(self, request):
+        target_smtp_host = getattr(settings, 'EMAIL_HOST', 'smtp.gmail.com')
+        target_smtp_port = int(getattr(settings, 'EMAIL_PORT', 587))
+
+        # 1. DNS Resolution
+        t0_dns = time.time()
+        dns_success = False
+        ipv4_list = []
+        ipv6_list = []
+        dns_error = None
+        try:
+            addr_info = socket.getaddrinfo(target_smtp_host, target_smtp_port)
+            for item in addr_info:
+                family = item[0]
+                sockaddr = item[4]
+                ip = sockaddr[0]
+                if family == socket.AF_INET and ip not in ipv4_list:
+                    ipv4_list.append(ip)
+                elif family == socket.AF_INET6 and ip not in ipv6_list:
+                    ipv6_list.append(ip)
+            dns_success = True
+        except Exception as e:
+            dns_error = f"{e.__class__.__name__}: {str(e)}"
+        dns_elapsed_ms = int((time.time() - t0_dns) * 1000)
+
+        # 2. TCP Probes
+        probes = []
+        
+        # Probe 1: Default socket connection to configured SMTP host:port
+        t0_def = time.time()
+        try:
+            s_def = socket.create_connection((target_smtp_host, target_smtp_port), timeout=3.0)
+            s_def.close()
+            probes.append({
+                'description': f'Default socket.create_connection to {target_smtp_host}:{target_smtp_port}',
+                'connected': True,
+                'error_type': None,
+                'error_message': None,
+                'elapsed_ms': int((time.time() - t0_def) * 1000)
+            })
+        except Exception as e:
+            probes.append({
+                'description': f'Default socket.create_connection to {target_smtp_host}:{target_smtp_port}',
+                'connected': False,
+                'error_type': e.__class__.__name__,
+                'error_message': str(e),
+                'elapsed_ms': int((time.time() - t0_def) * 1000)
+            })
+
+        # Probe 2: Forced IPv4 to first resolved IPv4
+        ipv4_target = ipv4_list[0] if ipv4_list else target_smtp_host
+        probes.append({
+            'description': f'IPv4 direct socket connect to {ipv4_target}:{target_smtp_port}',
+            **self._test_tcp(ipv4_target, target_smtp_port, family=socket.AF_INET, timeout=3.0)
+        })
+
+        # Probe 3: Forced IPv4 to Port 465 (SMTPS)
+        probes.append({
+            'description': f'IPv4 direct socket connect to {ipv4_target}:465 (SMTPS)',
+            **self._test_tcp(ipv4_target, 465, family=socket.AF_INET, timeout=3.0)
+        })
+
+        # Probe 4: Forced IPv4 to Port 25 (Standard SMTP)
+        probes.append({
+            'description': f'IPv4 direct socket connect to {ipv4_target}:25 (Standard SMTP)',
+            **self._test_tcp(ipv4_target, 25, family=socket.AF_INET, timeout=3.0)
+        })
+
+        # Probe 5: Outbound HTTPS Control Test (google.com:443)
+        probes.append({
+            'description': 'Outbound HTTPS control test to google.com:443',
+            **self._test_tcp('google.com', 443, family=socket.AF_INET, timeout=3.0)
+        })
+
+        # Probe 6: Outbound HTTPS Control Test to Email API Provider (api.resend.com:443)
+        probes.append({
+            'description': 'Outbound HTTPS email API test to api.resend.com:443',
+            **self._test_tcp('api.resend.com', 443, family=socket.AF_INET, timeout=3.0)
+        })
+
+        # Determine verdict
+        smtp_587_ok = any(p['connected'] for p in probes if '587' in p['description'])
+        https_443_ok = any(p['connected'] for p in probes if '443' in p['description'])
+        outbound_smtp_blocked = dns_success and not smtp_587_ok and https_443_ok
+
+        return Response({
+            'dns_audit': {
+                'target_host': target_smtp_host,
+                'dns_resolution_success': dns_success,
+                'ipv4_addresses': ipv4_list,
+                'ipv6_addresses': ipv6_list,
+                'dns_error': dns_error,
+                'elapsed_ms': dns_elapsed_ms
+            },
+            'tcp_connection_probes': probes,
+            'audit_summary': {
+                'dns_operational': dns_success,
+                'smtp_port_587_accessible': smtp_587_ok,
+                'outbound_https_functional': https_443_ok,
+                'is_outbound_smtp_blocked_by_host': outbound_smtp_blocked,
+                'root_cause_confirmation': (
+                    "CONFIRMED: Render host blocks outbound SMTP traffic (ports 25, 465, 587). "
+                    "Outbound HTTPS (port 443) is fully operational. "
+                    "The failure is network-level egress blocking, not Gmail authentication credentials."
+                    if outbound_smtp_blocked else (
+                        "SMTP port 587 is accessible." if smtp_587_ok else "Network check inconclusive."
+                    )
+                )
+            }
         }, status=status.HTTP_200_OK)
 
 

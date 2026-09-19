@@ -244,7 +244,7 @@ class TestCompleteEmailFlows:
         assert len(mail.outbox) == 1  # No duplicate send!
 
     # =========================================================================
-    # 5. Diagnostic Email Status API
+    # 5. Diagnostic Email Status & Network Audit API
     # =========================================================================
     def test_email_status_diagnostic_endpoint(self):
         url = reverse('email_status_diagnostics')
@@ -259,3 +259,17 @@ class TestCompleteEmailFlows:
         # Ensure passwords are NOT exposed
         assert 'EMAIL_HOST_PASSWORD' not in res.data
         assert 'password' not in res.data
+
+    def test_network_audit_diagnostic_endpoint(self):
+        url = reverse('email_network_audit')
+        res = self.client.get(url)
+        assert res.status_code == 200
+        assert 'dns_audit' in res.data
+        assert 'tcp_connection_probes' in res.data
+        assert 'audit_summary' in res.data
+        assert res.data['dns_audit']['dns_resolution_success'] is True
+        assert len(res.data['tcp_connection_probes']) >= 5
+        # Ensure no passwords or credentials exposed
+        assert 'EMAIL_HOST_PASSWORD' not in res.data
+        assert 'password' not in str(res.data).lower()
+
