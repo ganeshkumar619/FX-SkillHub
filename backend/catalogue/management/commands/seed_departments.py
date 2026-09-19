@@ -1,13 +1,11 @@
-from django.apps import AppConfig
-from django.db.models.signals import post_migrate
+from django.core.management.base import BaseCommand
+from django.utils import timezone
+from catalogue.models import Department
 
+class Command(BaseCommand):
+    help = 'Seeds or updates the 10 official institutional departments for Francis Xavier Engineering College (FXEC)'
 
-def seed_departments_post_migrate(sender, **kwargs):
-    if sender.name != 'catalogue':
-        return
-    try:
-        from django.utils import timezone
-        from catalogue.models import Department
+    def handle(self, *args, **options):
         now = timezone.now()
         departments_data = [
             {'code': 'CSE', 'name': 'Computer Science and Engineering', 'description': 'NBA Accredited UG Programme & Recognized Anna University Research Centre.'},
@@ -21,8 +19,12 @@ def seed_departments_post_migrate(sender, **kwargs):
             {'code': 'MBA', 'name': 'Master of Business Administration', 'description': 'Autonomous PG Programme rated Top B-School.'},
             {'code': 'MCA', 'name': 'Master of Computer Application', 'description': 'Autonomous PG Programme in computer applications.'},
         ]
+
+        created_count = 0
+        updated_count = 0
+
         for d in departments_data:
-            dept, created = Department.objects.get_or_create(
+            dept, created = Department.objects.update_or_create(
                 code=d['code'],
                 defaults={
                     'name': d['name'],
@@ -37,18 +39,13 @@ def seed_departments_post_migrate(sender, **kwargs):
                     'approval_status': 'APPROVED'
                 }
             )
-            if not created and not dept.is_active:
-                dept.is_active = True
-                dept.save(update_fields=['is_active'])
-    except Exception:
-        # Failsafe: avoid crashing if table structure is not ready
-        pass
+            if created:
+                created_count += 1
+            else:
+                updated_count += 1
 
-
-class CatalogueConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'catalogue'
-
-    def ready(self):
-        post_migrate.connect(seed_departments_post_migrate, sender=self)
-
+        self.stdout.write(
+            self.style.SUCCESS(
+                f'Successfully seeded departments: {created_count} created, {updated_count} updated. Total active: {Department.objects.filter(is_active=True).count()}'
+            )
+        )

@@ -2,12 +2,21 @@ import axios from 'axios';
 
 const PRODUCTION_API_URL = 'https://fx-skillhub.onrender.com/api';
 
+const normalizeApiBaseUrl = (url: string): string => {
+  let cleaned = url.trim().replace(/\/+$/, '');
+  if (!cleaned.endsWith('/api')) {
+    cleaned = `${cleaned}/api`;
+  }
+  return cleaned;
+};
+
 /**
  * Resolves the API Base URL with strict production rules:
  * 1. Production builds MUST NEVER use localhost, 127.0.0.1, or bare relative '/api'.
- * 2. If VITE_API_BASE_URL is unset, empty, or mistakenly contains localhost/127.0.0.1 in production,
+ * 2. Guarantees the /api suffix is present (preventing 404s if VITE_API_BASE_URL is set to origin only).
+ * 3. If VITE_API_BASE_URL is unset, empty, or mistakenly contains localhost/127.0.0.1 in production,
  *    it strictly defaults to the deployed Render backend: https://fx-skillhub.onrender.com/api.
- * 3. Local development continues using '/api' (forwarded by Vite dev proxy) or custom dev URL.
+ * 4. Local development continues using '/api' (forwarded by Vite dev proxy) or custom dev URL.
  */
 const resolveApiBaseUrl = (): string => {
   const envUrl = import.meta.env.VITE_API_BASE_URL;
@@ -16,7 +25,7 @@ const resolveApiBaseUrl = (): string => {
     if (envUrl && typeof envUrl === 'string') {
       const trimmed = envUrl.trim().replace(/\/+$/, '');
       if (!trimmed.includes('localhost') && !trimmed.includes('127.0.0.1') && trimmed.length > 0) {
-        return trimmed;
+        return normalizeApiBaseUrl(trimmed);
       }
     }
     return PRODUCTION_API_URL;

@@ -37,7 +37,10 @@ from .views import (
     AdminReportedVideoIssuesView,
     AICourseGenerateView,
     CourseQuestionBankView,
-    VideoPackageDetailView
+    VideoPackageDetailView,
+    AdminDepartmentListCreateView,
+    AdminDepartmentDetailView,
+    AdminDepartmentToggleStatusView
 )
 from .faculty_builder_views import (
     FacultyCourseCreateOrUpdateView,
@@ -109,6 +112,9 @@ urlpatterns = [
     path('admin/reported-videos/', AdminReportedVideoIssuesView.as_view(), name='admin_reported_videos'),
     path('admin/reported-videos/<int:pk>/resolve/', AdminReportedVideoIssuesView.as_view(), name='admin_resolve_reported_video'),
     path('admin/reported-videos/<int:pk>/', AdminReportedVideoIssuesView.as_view(), name='admin_delete_reported_video'),
+    path('admin/departments/', AdminDepartmentListCreateView.as_view(), name='admin_departments_list_create'),
+    path('admin/departments/<int:pk>/', AdminDepartmentDetailView.as_view(), name='admin_department_detail'),
+    path('admin/departments/<int:pk>/toggle-status/', AdminDepartmentToggleStatusView.as_view(), name='admin_department_toggle_status'),
 
     # AI Discovery & Recommendations
     path('ai/skill-suggestions/', AISkillDiscoveryView.as_view(), name='ai_skill_suggestions'),

@@ -30,6 +30,15 @@ class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     year = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=4)
     name = serializers.CharField(required=False, write_only=True, allow_blank=True)
+    department = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.filter(is_active=True),
+        required=True,
+        error_messages={
+            'required': 'Please select your department.',
+            'null': 'Please select your department.',
+            'does_not_exist': 'Selected department does not exist or is inactive.'
+        }
+    )
 
     class Meta:
         model = User
@@ -252,7 +261,15 @@ class AdminFacultyCreateSerializer(serializers.Serializer):
     email = serializers.CharField()
     faculty_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     register_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.all(), required=False, allow_null=True)
+    department = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.filter(is_active=True),
+        required=True,
+        error_messages={
+            'required': 'Please select an active department for the faculty member.',
+            'null': 'Please select an active department for the faculty member.',
+            'does_not_exist': 'Selected department does not exist or is inactive.'
+        }
+    )
     phone = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     password = serializers.CharField(required=False, allow_blank=True, min_length=8)
     is_active = serializers.BooleanField(default=True)

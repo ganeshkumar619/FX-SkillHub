@@ -1,3 +1,4 @@
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.text import slugify
 from django.db.models import Q, Count
@@ -71,9 +72,108 @@ class IsAdminOnly(permissions.BasePermission):
 # ---------------------------------------------------------
 
 class DepartmentListView(generics.ListAPIView):
-    queryset = Department.objects.all()
+    """
+    Publicly accessible endpoint returning all active departments for dropdowns & registration.
+    Returns unpaginated array: [{ id, code, name, description, is_active }, ...]
+    """
+    queryset = Department.objects.filter(is_active=True).order_by('name')
     serializer_class = DepartmentSerializer
     permission_classes = [permissions.AllowAny]
+    pagination_class = None
+
+
+class AdminDepartmentListCreateView(APIView):
+    """
+    Admin endpoint to list all departments (including inactive) or create a new department.
+    """
+    permission_classes = [IsAdminOnly]
+
+    def get(self, request):
+        qs = Department.objects.all().order_by('name')
+        search = (request.query_params.get('search') or '').strip()
+        if search:
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+        status_param = request.query_params.get('is_active')
+        if status_param in ('true', '1'):
+            qs = qs.filter(is_active=True)
+        elif status_param in ('false', '0'):
+            qs = qs.filter(is_active=False)
+        serializer = DepartmentSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        code = (request.data.get('code') or '').strip().upper()
+        name = (request.data.get('name') or '').strip()
+        description = (request.data.get('description') or '').strip()
+        is_active = request.data.get('is_active', True)
+
+        if not code:
+            return Response({'error': 'Department code is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not name:
+            return Response({'error': 'Department name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Department.objects.filter(code__iexact=code).exists():
+            return Response({'error': f"Department with code '{code}' already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        dept = Department.objects.create(
+            code=code,
+            name=name,
+            description=description,
+            is_active=bool(is_active),
+            created_by=request.user,
+            source_type='ADMIN_CREATED',
+            approval_status='APPROVED',
+            content_status='PUBLISHED'
+        )
+        return Response(DepartmentSerializer(dept).data, status=status.HTTP_201_CREATED)
+
+
+class AdminDepartmentDetailView(APIView):
+    """
+    Admin endpoint to view, update, or edit a specific department.
+    """
+    permission_classes = [IsAdminOnly]
+
+    def get(self, request, pk):
+        dept = get_object_or_404(Department, pk=pk)
+        return Response(DepartmentSerializer(dept).data)
+
+    def put(self, request, pk):
+        dept = get_object_or_404(Department, pk=pk)
+        code = (request.data.get('code') or dept.code).strip().upper()
+        name = (request.data.get('name') or dept.name).strip()
+        description = request.data.get('description', dept.description)
+        is_active = request.data.get('is_active', dept.is_active)
+
+        if not code or not name:
+            return Response({'error': 'Code and Name are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Department.objects.filter(code__iexact=code).exclude(pk=pk).exists():
+            return Response({'error': f"Department code '{code}' is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+
+        dept.code = code
+        dept.name = name
+        dept.description = description
+        dept.is_active = bool(is_active)
+        dept.save()
+        return Response(DepartmentSerializer(dept).data)
+
+
+class AdminDepartmentToggleStatusView(APIView):
+    """
+    Admin endpoint to toggle a department between active and inactive.
+    """
+    permission_classes = [IsAdminOnly]
+
+    def post(self, request, pk):
+        dept = get_object_or_404(Department, pk=pk)
+        dept.is_active = not dept.is_active
+        dept.save(update_fields=['is_active'])
+        return Response({
+            'message': f"Department '{dept.code}' status changed to {'ACTIVE' if dept.is_active else 'INACTIVE'}.",
+            'is_active': dept.is_active,
+            'department': DepartmentSerializer(dept).data
+        })
 
 
 class SkillCategoryListView(generics.ListAPIView):

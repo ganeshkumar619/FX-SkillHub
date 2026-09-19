@@ -31,6 +31,8 @@ import {
   UserX,
   Phone,
   Building,
+  Building2,
+  Plus,
   Key,
   Clock,
   Send
@@ -76,7 +78,7 @@ interface EmailLogItem {
 
 export const AdminPage: React.FC = () => {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'faculty' | 'students' | 'proposals' | 'all_courses' | 'ai_suggestions' | 'reported_videos' | 'provenance' | 'audit' | 'email' | 'certificates' | 'branding'>('faculty');
+  const [activeTab, setActiveTab] = useState<'faculty' | 'students' | 'departments' | 'proposals' | 'all_courses' | 'ai_suggestions' | 'reported_videos' | 'provenance' | 'audit' | 'email' | 'certificates' | 'branding'>('faculty');
   const [loading, setLoading] = useState(true);
   const [isGeneratorOpen, setIsGeneratorOpen] = useState(false);
   const [generatorSkillName, setGeneratorSkillName] = useState('');
@@ -91,8 +93,22 @@ export const AdminPage: React.FC = () => {
     total_departments: number;
   } | null>(null);
 
-  // Departments List
+  // Departments List (Active)
   const [departments, setDepartments] = useState<Department[]>([]);
+
+  // Department Master Management State (All Departments)
+  const [adminDepartments, setAdminDepartments] = useState<Department[]>([]);
+  const [deptSearch, setDeptSearch] = useState('');
+  const [deptStatusFilter, setDeptStatusFilter] = useState('');
+  const [isAddDeptModalOpen, setIsAddDeptModalOpen] = useState(false);
+  const [addDeptLoading, setAddDeptLoading] = useState(false);
+  const [addDeptError, setAddDeptError] = useState<string | null>(null);
+  const [addDeptForm, setAddDeptForm] = useState({
+    code: '',
+    name: '',
+    description: '',
+    is_active: true
+  });
 
   // Faculty Management State
   const [facultyList, setFacultyList] = useState<FacultyMember[]>([]);
@@ -170,9 +186,24 @@ export const AdminPage: React.FC = () => {
   const fetchDepartments = async () => {
     try {
       const res = await apiClient.get('/catalogue/departments/');
-      setDepartments(res.data.results || res.data);
+      const depts = Array.isArray(res.data) ? res.data : (res.data.results || []);
+      setDepartments(depts);
     } catch (e) {
-      console.error('Failed to load departments', e);
+      console.error('Failed to load active departments', e);
+    }
+  };
+
+  const fetchAdminDepartments = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (deptSearch) params.append('search', deptSearch);
+      if (deptStatusFilter) params.append('is_active', deptStatusFilter);
+      const res = await apiClient.get(`/catalogue/admin/departments/?${params.toString()}`);
+      const list = Array.isArray(res.data) ? res.data : (res.data.results || []);
+      setAdminDepartments(list);
+    } catch (e) {
+      console.error('Failed to load admin departments', e);
+      setAdminDepartments([]);
     }
   };
 
@@ -235,6 +266,8 @@ export const AdminPage: React.FC = () => {
         await fetchFaculty();
       } else if (activeTab === 'students') {
         await fetchStudents();
+      } else if (activeTab === 'departments') {
+        await fetchAdminDepartments();
       } else if (activeTab === 'proposals') {
         const res = await apiClient.get('/catalogue/admin/course-proposals/');
         setPendingProposals(res.data.results || res.data);
@@ -288,6 +321,66 @@ export const AdminPage: React.FC = () => {
     }
   }, [studentSearch, studentDeptFilter, studentYearFilter]);
 
+  useEffect(() => {
+    if (activeTab === 'departments') {
+      const delay = setTimeout(fetchAdminDepartments, 250);
+      return () => clearTimeout(delay);
+    }
+  }, [deptSearch, deptStatusFilter]);
+
+  // Toggle Department Active / Inactive Status
+  const handleToggleDeptStatus = async (deptId: number, code: string) => {
+    try {
+      setActionInProgressId(deptId);
+      const res = await apiClient.post(`/catalogue/admin/departments/${deptId}/toggle-status/`);
+      setActionMessage(`Department '${code}' status set to: ${res.data.is_active ? 'ACTIVE' : 'INACTIVE'}.`);
+      fetchAdminDepartments();
+      fetchDepartments();
+      fetchOverview();
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'Failed to update department status');
+    } finally {
+      setActionInProgressId(null);
+    }
+  };
+
+  // Add Department Submit
+  const handleAddDeptSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddDeptError(null);
+    const code = addDeptForm.code.trim().toUpperCase();
+    const name = addDeptForm.name.trim();
+
+    if (!code) {
+      setAddDeptError('Department code is required (e.g. CSE, ECE).');
+      return;
+    }
+    if (!name) {
+      setAddDeptError('Department name is required.');
+      return;
+    }
+
+    try {
+      setAddDeptLoading(true);
+      await apiClient.post('/catalogue/admin/departments/', {
+        code,
+        name,
+        description: addDeptForm.description.trim(),
+        is_active: addDeptForm.is_active
+      });
+      setIsAddDeptModalOpen(false);
+      setAddDeptForm({ code: '', name: '', description: '', is_active: true });
+      setActionMessage(`Department '${code} - ${name}' created successfully.`);
+      fetchAdminDepartments();
+      fetchDepartments();
+      fetchOverview();
+    } catch (err: any) {
+      setAddDeptError(err?.response?.data?.error || 'Failed to create department.');
+    } finally {
+      setAddDeptLoading(false);
+    }
+  };
+
   // Toggle Faculty Active / Inactive Status
   const handleToggleFacultyStatus = async (facultyId: number, name: string) => {
     try {
@@ -315,6 +408,11 @@ export const AdminPage: React.FC = () => {
       return;
     }
 
+    if (!addFacultyForm.department) {
+      setAddFacultyError('Please select a department for the faculty member.');
+      return;
+    }
+
     try {
       setAddFacultyLoading(true);
       const res = await apiClient.post('/admin/faculty/', {
@@ -322,7 +420,7 @@ export const AdminPage: React.FC = () => {
         last_name: addFacultyForm.last_name,
         email,
         faculty_id: addFacultyForm.faculty_id,
-        department: addFacultyForm.department ? parseInt(addFacultyForm.department) : null,
+        department: parseInt(addFacultyForm.department),
         phone: addFacultyForm.phone,
         is_active: addFacultyForm.is_active
       });
@@ -399,13 +497,18 @@ export const AdminPage: React.FC = () => {
     if (!editingFaculty) return;
     setEditFacultyError(null);
 
+    if (!editFacultyForm.department) {
+      setEditFacultyError('Please select a department for the faculty member.');
+      return;
+    }
+
     try {
       setEditFacultyLoading(true);
       const payload: any = {
         first_name: editFacultyForm.first_name,
         last_name: editFacultyForm.last_name,
         faculty_id: editFacultyForm.faculty_id,
-        department: editFacultyForm.department ? parseInt(editFacultyForm.department) : null,
+        department: parseInt(editFacultyForm.department),
         phone: editFacultyForm.phone,
         is_active: editFacultyForm.is_active
       };
@@ -831,6 +934,18 @@ export const AdminPage: React.FC = () => {
         >
           <GraduationCap className="w-4 h-4 text-accent-600" />
           Student Directory ({studentList.length || overviewStats?.total_students || 0})
+        </button>
+
+        <button
+          onClick={() => setActiveTab('departments')}
+          className={`pb-3 px-4 flex items-center gap-2 transition-all border-b-2 ${
+            activeTab === 'departments'
+              ? 'border-primary-900 text-primary-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Building2 className="w-4 h-4 text-indigo-600" />
+          Departments ({adminDepartments.length || departments.length || overviewStats?.total_departments || 0})
         </button>
 
         <button
@@ -1350,6 +1465,161 @@ export const AdminPage: React.FC = () => {
                         </tr>
                       );
                     })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* TAB: DEPARTMENT MASTER SYSTEM */}
+      {/* ========================================================= */}
+      {activeTab === 'departments' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-indigo-600" />
+                Institutional Department Master
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Administer database-backed academic departments for student enrollment, faculty allocations, and course offerings.
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                setAddDeptError(null);
+                setIsAddDeptModalOpen(true);
+              }}
+              className="px-4 py-2.5 bg-primary-900 hover:bg-primary-800 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer self-start sm:self-auto"
+            >
+              <Plus className="w-4 h-4" />
+              Add Department
+            </button>
+          </div>
+
+          {/* Search & Status Filters */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-stretch md:items-center gap-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={deptSearch}
+                onChange={(e) => setDeptSearch(e.target.value)}
+                placeholder="Search departments by code or name..."
+                className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-primary-900"
+              />
+              {deptSearch && (
+                <button
+                  onClick={() => setDeptSearch('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={deptStatusFilter}
+                onChange={(e) => setDeptStatusFilter(e.target.value)}
+                className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-hidden focus:border-primary-900"
+              >
+                <option value="">All Statuses</option>
+                <option value="true">Active Only</option>
+                <option value="false">Inactive Only</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Department Table */}
+          {loading && (!adminDepartments || adminDepartments.length === 0) ? (
+            <div className="text-center py-16">
+              <div className="w-8 h-8 border-4 border-primary-900 border-t-transparent rounded-full animate-spin mx-auto" />
+            </div>
+          ) : (!Array.isArray(adminDepartments) || adminDepartments.length === 0) ? (
+            <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center text-xs text-slate-500 space-y-3">
+              <Building2 className="w-10 h-10 text-slate-300 mx-auto" />
+              <p className="font-semibold">No departments found matching your criteria.</p>
+              <button
+                onClick={() => {
+                  setDeptSearch('');
+                  setDeptStatusFilter('');
+                }}
+                className="text-primary-900 underline text-xs font-bold"
+              >
+                Clear all filters
+              </button>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-4">Code</th>
+                      <th className="py-3 px-4">Department Name</th>
+                      <th className="py-3 px-4">Description</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Created Date</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                    {adminDepartments.map((d) => (
+                      <tr key={d.id} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3 px-4">
+                          <span className="px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-700 font-mono font-black text-xs">
+                            {d.code}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4 font-bold text-slate-900">
+                          {d.name}
+                        </td>
+
+                        <td className="py-3 px-4 text-slate-500 max-w-xs truncate">
+                          {d.description || '—'}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          {d.is_active ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              Active
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                              Inactive
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-slate-400 font-mono text-[11px]">
+                          {d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'}
+                        </td>
+
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleDeptStatus(d.id, d.code)}
+                            disabled={actionInProgressId === d.id}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition border cursor-pointer disabled:opacity-50 ${
+                              d.is_active
+                                ? 'bg-slate-50 text-rose-600 border-rose-200 hover:bg-rose-50'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                            }`}
+                            title={d.is_active ? 'Deactivate Department' : 'Activate Department'}
+                          >
+                            {d.is_active ? 'Deactivate' : 'Activate'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -2455,11 +2725,15 @@ export const AdminPage: React.FC = () => {
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-hidden focus:border-primary-900"
                   >
                     <option value="">Select Department</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.code} - {d.name}
-                      </option>
-                    ))}
+                    {departments.length === 0 ? (
+                      <option value="" disabled>No departments available — add in Departments tab</option>
+                    ) : (
+                      departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.code} - {d.name}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
               </div>
@@ -2603,18 +2877,23 @@ export const AdminPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Department</label>
+                  <label className="block font-bold text-slate-700 mb-1">Department *</label>
                   <select
+                    required
                     value={editFacultyForm.department}
                     onChange={(e) => setEditFacultyForm({ ...editFacultyForm, department: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-hidden focus:border-primary-900"
                   >
                     <option value="">Select Department</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.code} - {d.name}
-                      </option>
-                    ))}
+                    {departments.length === 0 ? (
+                      <option value="" disabled>No departments available — add in Departments tab</option>
+                    ) : (
+                      departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.code} - {d.name}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
               </div>
@@ -2678,6 +2957,121 @@ export const AdminPage: React.FC = () => {
                     <>
                       <Check className="w-3.5 h-3.5" />
                       Save Changes
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* ========================================================= */}
+      {/* MODAL: ADD DEPARTMENT */}
+      {/* ========================================================= */}
+      {isAddDeptModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl border border-slate-100 my-8 space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <span className="text-[10px] font-bold tracking-wider uppercase text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full">
+                  Department Master
+                </span>
+                <h3 className="text-lg font-black text-slate-900 mt-1">Add Academic Department</h3>
+                <p className="text-xs text-slate-500">Create a permanent institutional department in the database.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddDeptModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            {addDeptError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{addDeptError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleAddDeptSubmit} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Department Code *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={addDeptForm.code}
+                  onChange={(e) => setAddDeptForm({ ...addDeptForm, code: e.target.value.toUpperCase() })}
+                  placeholder="e.g. CSE, ECE, AIDS"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-hidden focus:border-primary-900 font-mono uppercase"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Department Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={addDeptForm.name}
+                  onChange={(e) => setAddDeptForm({ ...addDeptForm, name: e.target.value })}
+                  placeholder="e.g. Computer Science and Engineering"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-hidden focus:border-primary-900"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={addDeptForm.description}
+                  onChange={(e) => setAddDeptForm({ ...addDeptForm, description: e.target.value })}
+                  placeholder="Brief description of the academic department..."
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-hidden focus:border-primary-900"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="addDeptActive"
+                  checked={addDeptForm.is_active}
+                  onChange={(e) => setAddDeptForm({ ...addDeptForm, is_active: e.target.checked })}
+                  className="rounded border-slate-300 text-primary-900 focus:ring-primary-900"
+                />
+                <label htmlFor="addDeptActive" className="font-semibold text-slate-700 cursor-pointer">
+                  Department is active and available for student registration
+                </label>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAddDeptModalOpen(false)}
+                  className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl font-bold transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={addDeptLoading}
+                  className="px-5 py-2.5 bg-primary-900 hover:bg-primary-800 text-white rounded-xl font-bold flex items-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {addDeptLoading ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5" />
+                      Create Department
                     </>
                   )}
                 </button>
