@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     # Third party
     'rest_framework',
     'corsheaders',
+    'anymail',
     
     # Core Domain Apps
     'authentication',
@@ -136,20 +137,43 @@ CORS_ALLOW_CREDENTIALS = True
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://fx-skillhub-frontend.onrender.com' if not DEBUG else 'http://localhost:5173').rstrip('/')
 PUBLIC_PORTAL_URL = os.getenv('PUBLIC_PORTAL_URL', FRONTEND_URL).rstrip('/')
 
-# Email Configuration
+# Email Configuration — Resend HTTPS API (Port 443) & SMTP Fallback
+ANYMAIL_RESEND_API_KEY = os.getenv('ANYMAIL_RESEND_API_KEY', os.getenv('RESEND_API_KEY', '')).strip()
+ANYMAIL = {
+    'RESEND_API_KEY': ANYMAIL_RESEND_API_KEY,
+}
+
+# Legacy SMTP fallback configuration
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '').replace(' ', '')
-EMAIL_BACKEND = os.getenv(
-    'EMAIL_BACKEND',
-    'django.core.mail.backends.smtp.EmailBackend' if (EMAIL_HOST_USER or not DEBUG) else 'django.core.mail.backends.console.EmailBackend'
-)
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() in ('true', '1', 't')
 EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'False').lower() in ('true', '1', 't')
+
+# Email Backend Resolution:
+# 1. Explicit EMAIL_BACKEND environment variable
+# 2. If ANYMAIL_RESEND_API_KEY is configured, route to anymail Resend HTTPS backend
+# 3. If in production (not DEBUG), default to anymail Resend HTTPS backend
+# 4. If EMAIL_HOST_USER configured in local dev, fallback to SMTP
+# 5. Default local dev to console backend
+if os.getenv('EMAIL_BACKEND'):
+    EMAIL_BACKEND = os.getenv('EMAIL_BACKEND')
+elif ANYMAIL_RESEND_API_KEY:
+    EMAIL_BACKEND = 'anymail.backends.resend.EmailBackend'
+elif not DEBUG:
+    EMAIL_BACKEND = 'anymail.backends.resend.EmailBackend'
+elif EMAIL_HOST_USER:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# Sender configuration
 DEFAULT_FROM_EMAIL = os.getenv(
     'DEFAULT_FROM_EMAIL',
-    f'FX SkillHub <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'FX SkillHub <skills@francisxavier.ac.in>'
+    'FX SkillHub <onboarding@resend.dev>' if 'anymail' in str(EMAIL_BACKEND) else (
+        f'FX SkillHub <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'FX SkillHub <skills@francisxavier.ac.in>'
+    )
 )
 EMAIL_TIMEOUT = int(os.getenv('EMAIL_TIMEOUT', 10))
 

@@ -13,11 +13,13 @@ User = get_user_model()
 @pytest.mark.django_db
 class TestModelIntegrityAndRules:
     def setup_method(self):
-        self.dept = Department.objects.create(
+        self.dept, _ = Department.objects.get_or_create(
             code='CSE',
-            name='Computer Science and Engineering',
-            source_type='FXEC_OFFICIAL',
-            source_url='https://www.francisxavier.ac.in/departments'
+            defaults={
+                'name': 'Computer Science and Engineering',
+                'source_type': 'FXEC_OFFICIAL',
+                'source_url': 'https://www.francisxavier.ac.in/departments'
+            }
         )
         self.category = SkillCategory.objects.create(
             name='Foundation Course',

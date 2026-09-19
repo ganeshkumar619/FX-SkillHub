@@ -41,27 +41,52 @@ class EmailLogListView(views.APIView):
 
 class EmailStatusDiagnosticsView(views.APIView):
     """
-    Publicly verifiable, read-only diagnostic view that reports SMTP configuration
-    and live connectivity status. Never reveals secrets or passwords.
+    Publicly verifiable, read-only diagnostic view that reports email configuration
+    and live connectivity status. Never reveals secrets, passwords, or API keys.
     """
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
         diag = EmailNotificationService.test_smtp_connection()
+        backend_name = diag.get('backend', '')
+        is_resend = 'anymail' in str(backend_name).lower() or 'resend' in str(backend_name).lower()
+
+        resend_key_configured = diag.get('resend_api_key_configured', False)
+        sender_configured = diag.get('sender_configured', False)
+        https_connected = diag.get('https_api_connectivity', False)
         user_configured = bool(getattr(settings, 'EMAIL_HOST_USER', ''))
         password_configured = bool(getattr(settings, 'EMAIL_HOST_PASSWORD', ''))
 
         recommendations = []
-        if not user_configured or not password_configured:
-            recommendations.append("Add EMAIL_HOST_USER and EMAIL_HOST_PASSWORD in Render environment variables.")
-        if diag.get('error_stage') == 'CONNECTION':
-            recommendations.append("Outbound connection to SMTP server failed/timed out. Ensure port 587 is accessible from the container.")
-        elif diag.get('error_stage') == 'AUTHENTICATION':
-            recommendations.append("SMTP Authentication failed. For Gmail, use an active 16-character App Password without spaces.")
+        if is_resend:
+            if not resend_key_configured:
+                recommendations.append("Add ANYMAIL_RESEND_API_KEY in Render environment variables.")
+            if not sender_configured:
+                recommendations.append("Add DEFAULT_FROM_EMAIL in Render environment variables (e.g. 'FX SkillHub <onboarding@resend.dev>').")
+            if not https_connected:
+                recommendations.append("Outbound HTTPS connection to api.resend.com:443 failed.")
+        else:
+            if not user_configured or not password_configured:
+                recommendations.append("Add EMAIL_HOST_USER and EMAIL_HOST_PASSWORD in Render environment variables.")
+            if diag.get('error_stage') == 'CONNECTION':
+                recommendations.append("Outbound connection to SMTP server failed/timed out. Switch to Resend HTTPS API.")
+            elif diag.get('error_stage') == 'AUTHENTICATION':
+                recommendations.append("SMTP Authentication failed.")
+
+        is_healthy = bool(diag.get('connected') and diag.get('authenticated'))
 
         return Response({
-            'status': 'healthy' if (diag.get('connected') and diag.get('authenticated')) else 'degraded',
-            'email_backend': diag.get('backend'),
+            'status': 'healthy' if is_healthy else 'degraded',
+            'email_backend': backend_name,
+            'resend_api_key_configured': resend_key_configured,
+            'sender_configured': sender_configured,
+            'https_api_connectivity': https_connected,
+            'default_from_email': getattr(settings, 'DEFAULT_FROM_EMAIL', ''),
+            'error_type': diag.get('error_type'),
+            'error_message': diag.get('error_message'),
+            'latency_ms': diag.get('latency_ms'),
+            'recommendations': recommendations,
+            # Legacy compatibility fields
             'email_host': diag.get('host'),
             'email_port': diag.get('port'),
             'email_use_tls': diag.get('use_tls'),
@@ -69,15 +94,10 @@ class EmailStatusDiagnosticsView(views.APIView):
             'email_timeout_sec': getattr(settings, 'EMAIL_TIMEOUT', 10),
             'email_host_user_configured': user_configured,
             'email_host_password_configured': password_configured,
-            'default_from_email': getattr(settings, 'DEFAULT_FROM_EMAIL', ''),
             'frontend_url': getattr(settings, 'FRONTEND_URL', ''),
-            'smtp_socket_connected': diag.get('connected', False),
-            'smtp_authenticated': diag.get('authenticated', False),
+            'smtp_socket_connected': diag.get('connected', False) if not is_resend else False,
+            'smtp_authenticated': diag.get('authenticated', False) if not is_resend else False,
             'error_stage': diag.get('error_stage'),
-            'error_type': diag.get('error_type'),
-            'error_message': diag.get('error_message'),
-            'latency_ms': diag.get('latency_ms'),
-            'recommendations': recommendations
         }, status=status.HTTP_200_OK)
 
 

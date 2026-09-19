@@ -30,9 +30,9 @@ User = get_user_model()
 
 @pytest.mark.django_db
 class TestCodingAssessmentArchitecture:
-    @pytest.fixture
+    @pytest.fixture(autouse=True)
     def setup_env(self):
-        dept = Department.objects.create(code='CSE', name='Computer Science and Engineering')
+        dept, _ = Department.objects.get_or_create(code='CSE', defaults={'name': 'Computer Science and Engineering'})
         cat = SkillCategory.objects.create(name='Software Engineering')
         domain = SkillDomain.objects.create(category=cat, name='Programming Languages')
         

@@ -122,7 +122,7 @@ class TestAssessmentSecurityEngine:
 
         # Build academic catalogue structure
         category = SkillCategory.objects.create(name='AI Engineering', description='AI Skills')
-        dept = Department.objects.create(code='CSE', name='Computer Science and Engineering')
+        dept, _ = Department.objects.get_or_create(code='CSE', defaults={'name': 'Computer Science and Engineering'})
         skill = Skill.objects.create(name='Computer Vision', category=category, department=dept, level='INTERMEDIATE')
         course = Course.objects.create(
             title='Autonomous CV Systems',

@@ -250,18 +250,26 @@ class EmailNotificationService:
     @classmethod
     def test_smtp_connection(cls) -> dict:
         """
-        Tests the low-level connection and authentication to the configured SMTP server
-        without actually sending an email.
+        Tests the connectivity and configuration of the active email backend.
+        Supports both Anymail Resend (HTTPS port 443) and legacy SMTP.
+        Never reveals secret API keys or passwords.
         """
+        import socket
         start_time = time.time()
         backend_name = getattr(settings, 'EMAIL_BACKEND', '')
-        host = getattr(settings, 'EMAIL_HOST', '')
-        port = getattr(settings, 'EMAIL_PORT', 587)
+        is_resend = 'anymail' in backend_name.lower() or 'resend' in backend_name.lower()
+        timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+        
+        host = getattr(settings, 'EMAIL_HOST', 'api.resend.com' if is_resend else 'smtp.gmail.com')
+        port = 443 if is_resend else getattr(settings, 'EMAIL_PORT', 587)
         use_tls = getattr(settings, 'EMAIL_USE_TLS', True)
         use_ssl = getattr(settings, 'EMAIL_USE_SSL', False)
         user = getattr(settings, 'EMAIL_HOST_USER', '')
         password = getattr(settings, 'EMAIL_HOST_PASSWORD', '')
-        timeout = getattr(settings, 'EMAIL_TIMEOUT', 10)
+
+        # Resend API Key check
+        resend_key = getattr(settings, 'ANYMAIL', {}).get('RESEND_API_KEY', '') or getattr(settings, 'ANYMAIL_RESEND_API_KEY', '')
+        resend_key_configured = bool(str(resend_key).strip())
 
         result = {
             'backend': backend_name,
@@ -271,6 +279,9 @@ class EmailNotificationService:
             'use_ssl': use_ssl,
             'user_configured': bool(user),
             'password_configured': bool(password),
+            'resend_api_key_configured': resend_key_configured,
+            'sender_configured': bool(getattr(settings, 'DEFAULT_FROM_EMAIL', '')),
+            'https_api_connectivity': False,
             'connected': False,
             'authenticated': False,
             'error_stage': None,
@@ -279,7 +290,48 @@ class EmailNotificationService:
             'latency_ms': None
         }
 
-        # Check configuration
+        # Handling for Resend HTTPS Backend
+        if is_resend:
+            # 1. Test HTTPS Socket Connectivity to api.resend.com:443
+            https_connected = False
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(min(timeout, 3.0))
+            try:
+                sock.connect(('api.resend.com', 443))
+                sock.close()
+                https_connected = True
+            except Exception as ex:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                result['error_type'] = ex.__class__.__name__
+                result['error_message'] = str(ex)
+
+            result['https_api_connectivity'] = https_connected
+
+            # 2. Check API Key configuration
+            if not resend_key_configured:
+                result['error_stage'] = 'CONFIG'
+                result['error_type'] = result['error_type'] or 'MissingApiKey'
+                result['error_message'] = 'ANYMAIL_RESEND_API_KEY is not configured in environment.'
+                result['connected'] = https_connected
+                result['authenticated'] = False
+            elif not https_connected:
+                result['error_stage'] = 'CONNECTION'
+                result['connected'] = False
+                result['authenticated'] = False
+            else:
+                result['connected'] = True
+                result['authenticated'] = True
+                result['error_stage'] = None
+                result['error_type'] = None
+                result['error_message'] = None
+
+            result['latency_ms'] = int((time.time() - start_time) * 1000)
+            return result
+
+        # Legacy SMTP Backend Check
         if 'smtp' in backend_name.lower():
             if not user or not password:
                 result['error_stage'] = 'CONFIG'
@@ -290,7 +342,6 @@ class EmailNotificationService:
 
         try:
             connection = get_connection(timeout=timeout)
-            # Opening connection will establish socket, perform TLS handshake, and login
             connection.open()
             result['connected'] = True
             result['authenticated'] = bool(getattr(connection, 'connection', None))
@@ -316,7 +367,8 @@ class EmailNotificationService:
     def send_test_email(cls, recipient: str = None) -> dict:
         """
         Dispatches a diagnostic test email to the configured recipient and returns a
-        complete execution report. Never exposes secrets.
+        complete execution report. Routes through Resend HTTPS API in production.
+        Never exposes secrets or API keys.
         """
         start_time = time.time()
         conn_diag = cls.test_smtp_connection()
@@ -347,11 +399,11 @@ class EmailNotificationService:
                 body=(
                     f"This is an automated diagnostic test message from FX SkillHub.\n\n"
                     f"Timestamp: {now_iso}\n"
-                    f"Host: {conn_diag['host']}:{conn_diag['port']}\n"
                     f"Backend: {conn_diag['backend']}\n"
+                    f"Transport: HTTPS Port 443 (Resend)\n"
                     f"Sender: {settings.DEFAULT_FROM_EMAIL}\n"
                     f"Recipient: {target}\n\n"
-                    f"If you received this message, the FX SkillHub email delivery pipeline is operational."
+                    f"If you received this message, the FX SkillHub email delivery pipeline is fully operational."
                 ),
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[target],

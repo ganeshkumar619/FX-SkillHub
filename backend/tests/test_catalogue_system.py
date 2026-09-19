@@ -28,23 +28,29 @@ class TestCatalogueSystem:
         now = timezone.now()
 
         # Create Departments
-        self.dept_cse = Department.objects.create(
+        self.dept_cse, _ = Department.objects.get_or_create(
             code='CSE',
-            name='Computer Science and Engineering',
-            source_type='FXEC_OFFICIAL',
-            source_url='https://www.francisxavier.ac.in/departments'
+            defaults={
+                'name': 'Computer Science and Engineering',
+                'source_type': 'FXEC_OFFICIAL',
+                'source_url': 'https://www.francisxavier.ac.in/departments'
+            }
         )
-        self.dept_aids = Department.objects.create(
+        self.dept_aids, _ = Department.objects.get_or_create(
             code='AIDS',
-            name='Artificial Intelligence & Data Science',
-            source_type='FXEC_OFFICIAL',
-            source_url='https://www.francisxavier.ac.in/departments'
+            defaults={
+                'name': 'Artificial Intelligence & Data Science',
+                'source_type': 'FXEC_OFFICIAL',
+                'source_url': 'https://www.francisxavier.ac.in/departments'
+            }
         )
-        self.dept_mech = Department.objects.create(
+        self.dept_mech, _ = Department.objects.get_or_create(
             code='MECH',
-            name='Mechanical Engineering',
-            source_type='FXEC_OFFICIAL',
-            source_url='https://www.francisxavier.ac.in/departments'
+            defaults={
+                'name': 'Mechanical Engineering',
+                'source_type': 'FXEC_OFFICIAL',
+                'source_url': 'https://www.francisxavier.ac.in/departments'
+            }
         )
 
         # Create Category & Domain

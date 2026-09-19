@@ -251,14 +251,32 @@ class TestCompleteEmailFlows:
         res = self.client.get(url)
         assert res.status_code == 200
         assert 'email_backend' in res.data
-        assert 'email_host' in res.data
-        assert 'email_port' in res.data
-        assert 'email_host_user_configured' in res.data
-        assert 'email_host_password_configured' in res.data
+        assert 'resend_api_key_configured' in res.data
+        assert 'sender_configured' in res.data
+        assert 'https_api_connectivity' in res.data
+        assert 'default_from_email' in res.data
         assert 'frontend_url' in res.data
-        # Ensure passwords are NOT exposed
+        # Ensure passwords and secret keys are NOT exposed
         assert 'EMAIL_HOST_PASSWORD' not in res.data
         assert 'password' not in res.data
+        assert 'RESEND_API_KEY' not in res.data
+
+    @override_settings(
+        EMAIL_BACKEND='anymail.backends.resend.EmailBackend',
+        ANYMAIL={'RESEND_API_KEY': 're_secret_key_testing_12345'},
+        DEFAULT_FROM_EMAIL='FX SkillHub <onboarding@resend.dev>'
+    )
+    def test_resend_status_configuration_and_key_masking(self):
+        url = reverse('email_status_diagnostics')
+        res = self.client.get(url)
+        assert res.status_code == 200
+        assert res.data['email_backend'] == 'anymail.backends.resend.EmailBackend'
+        assert res.data['resend_api_key_configured'] is True
+        assert res.data['sender_configured'] is True
+        assert res.data['default_from_email'] == 'FX SkillHub <onboarding@resend.dev>'
+        # Invariant: Secret key must NEVER appear in response
+        assert 're_secret_key_testing_12345' not in str(res.data)
+        assert 'secret' not in str(res.data).lower()
 
     def test_network_audit_diagnostic_endpoint(self):
         url = reverse('email_network_audit')
@@ -272,4 +290,24 @@ class TestCompleteEmailFlows:
         # Ensure no passwords or credentials exposed
         assert 'EMAIL_HOST_PASSWORD' not in res.data
         assert 'password' not in str(res.data).lower()
+
+    def test_admin_test_email_dispatch_endpoint(self, monkeypatch):
+        token = generate_jwt_token(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        monkeypatch.setattr(
+            'notifications.email_service.EmailNotificationService.send_test_email',
+            lambda recipient: {
+                'send_success': True,
+                'backend': 'anymail.backends.resend.EmailBackend',
+                'recipient': recipient,
+                'total_latency_ms': 120
+            }
+        )
+
+        url = reverse('email_test_dispatch')
+        res = self.client.post(url, {'recipient': 'admin@fxec.ac.in'}, format='json')
+        assert res.status_code == 200
+        assert res.data['success'] is True
+        assert res.data['report']['backend'] == 'anymail.backends.resend.EmailBackend'
 
