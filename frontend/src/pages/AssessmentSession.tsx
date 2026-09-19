@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { apiClient } from '../api/client';
-import type { AssessmentAttempt, Question } from '../types';
+import type { AssessmentAttempt, Question, RunCodeResponse, SubmitCodeResponse } from '../types';
 import { FaceDetectionEngine } from '../utils/faceDetector';
 import { 
   Clock, 
@@ -20,7 +20,11 @@ import {
   Smartphone,
   EyeOff,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  Code2,
+  Play,
+  Terminal,
+  RotateCcw
 } from 'lucide-react';
 
 interface ActiveWarningInfo {
@@ -48,6 +52,28 @@ export const AssessmentSession: React.FC = () => {
   const [currentRiskTier, setCurrentRiskTier] = useState<string>('NORMAL');
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // Coding Question Workspace States
+  const [codingCode, setCodingCode] = useState<Record<number, string>>({});
+  const [codingLanguage, setCodingLanguage] = useState<Record<number, string>>({});
+  const [runResults, setRunResults] = useState<Record<number, RunCodeResponse | null>>({});
+  const [submitResults, setSubmitResults] = useState<Record<number, SubmitCodeResponse | null>>({});
+  const [isRunningCode, setIsRunningCode] = useState(false);
+  const [isSubmittingCode, setIsSubmittingCode] = useState(false);
+
+  const getStarterCode = useCallback((lang: string = 'python') => {
+    const l = (lang || '').toLowerCase();
+    if (l === 'c') {
+      return `#include <stdio.h>\n\nint main() {\n    // Read input from standard input\n    // Write your solution below\n    \n    return 0;\n}`;
+    }
+    if (l === 'cpp' || l === 'c++') {
+      return `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Read input from standard input\n    // Write your solution below\n    \n    return 0;\n}`;
+    }
+    if (l === 'java') {
+      return `import java.util.Scanner;\n\npublic class Solution {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        // Read input from standard input\n        // Write your solution below\n        \n    }\n}`;
+    }
+    return `# Write your Python solution below\nimport sys\n\ndef main():\n    # Read input from standard input\n    # Write your solution below\n    pass\n\nif __name__ == '__main__':\n    main()`;
+  }, []);
 
   // Security warning & termination states
   const [activeWarning, setActiveWarning] = useState<ActiveWarningInfo | null>(null);
@@ -140,6 +166,42 @@ export const AssessmentSession: React.FC = () => {
           });
         }
         setAnswers(formattedAnswers);
+
+        // Populate initial coding submissions if present
+        const initCodingCode: Record<number, string> = {};
+        const initCodingLang: Record<number, string> = {};
+        const initSubmitResults: Record<number, SubmitCodeResponse | null> = {};
+
+        if ((data as any).coding_answers) {
+          Object.entries((data as any).coding_answers).forEach(([qId, val]: [string, any]) => {
+            const numId = Number(qId);
+            if (val.submitted_code) {
+              initCodingCode[numId] = val.submitted_code;
+            }
+            if (val.code_language) {
+              initCodingLang[numId] = val.code_language;
+            }
+            if (val.code_execution_details && val.code_execution_details.total_count) {
+              initSubmitResults[numId] = {
+                mode: 'SUBMIT_CODE',
+                language: val.code_language || 'python',
+                sample_passed: val.code_execution_details.sample_passed || 0,
+                sample_total: val.code_execution_details.sample_total || 2,
+                hidden_passed: val.code_execution_details.hidden_passed || 0,
+                hidden_total: val.code_execution_details.hidden_total || 4,
+                total_passed: val.test_cases_passed || 0,
+                total_count: val.total_test_cases || 6,
+                passed: Boolean(val.code_execution_details.passed),
+                status: val.code_execution_details.passed ? 'PASSED' : 'FAILED',
+                sample_results: val.code_execution_details.sample_results || [],
+                hidden_summary: val.code_execution_details.hidden_summary || { passed_count: 0, total_count: 4, results: [] }
+              };
+            }
+          });
+        }
+        setCodingCode(initCodingCode);
+        setCodingLanguage(initCodingLang);
+        setSubmitResults(initSubmitResults);
 
         // Compute remaining time
         const deadline = new Date(data.server_deadline).getTime();
@@ -529,8 +591,26 @@ export const AssessmentSession: React.FC = () => {
 
     setSubmitting(true);
     try {
+      // Build coding answers payload
+      const codingPayload: Record<string, { code: string; language: string }> = {};
+      if (attempt?.questions) {
+        attempt.questions.forEach((q) => {
+          if (q.question_type === 'CODING') {
+            const lang = codingLanguage[q.id] || q.programming_language || 'python';
+            const code = codingCode[q.id] ?? getStarterCode(lang);
+            if (code && code.trim()) {
+              codingPayload[String(q.id)] = {
+                code,
+                language: lang
+              };
+            }
+          }
+        });
+      }
+
       const res = await apiClient.post(`/assessments/attempts/${activeAttemptId}/submit/`, {
-        answers
+        answers,
+        coding_answers: codingPayload
       });
       navigate(`/assessments/${activeAttemptId}/result`, {
         state: { result: res.data },
@@ -541,7 +621,86 @@ export const AssessmentSession: React.FC = () => {
       setSubmitting(false);
       setShowSubmitModal(false);
     }
-  }, [navigate, submitting, isTerminated, answers]);
+  }, [navigate, submitting, isTerminated, answers, attempt, codingCode, codingLanguage, getStarterCode]);
+
+  // Coding Workspace Handlers
+  const handleCodingCodeChange = useCallback(async (questionId: number, code: string, lang: string) => {
+    if (isTerminated) return;
+    setCodingCode((prev) => ({ ...prev, [questionId]: code }));
+    setCodingLanguage((prev) => ({ ...prev, [questionId]: lang }));
+
+    const activeAttemptId = attemptIdRef.current;
+    if (!activeAttemptId) return;
+
+    setSaveStatus('saving');
+    try {
+      await apiClient.post(`/assessments/attempts/${activeAttemptId}/answers/`, {
+        question_id: questionId,
+        submitted_code: code,
+        code_language: lang
+      });
+      setSaveStatus('saved');
+    } catch {
+      setSaveStatus('error');
+    }
+  }, [isTerminated]);
+
+  const handleRunCode = useCallback(async (q: Question) => {
+    const activeAttemptId = attemptIdRef.current;
+    if (!activeAttemptId || isTerminated || isRunningCode) return;
+    const lang = codingLanguage[q.id] || q.programming_language || 'python';
+    const code = codingCode[q.id] ?? getStarterCode(lang);
+
+    setIsRunningCode(true);
+    try {
+      const res = await apiClient.post(`/assessments/attempts/${activeAttemptId}/run-code/`, {
+        question_id: q.id,
+        code,
+        language: lang
+      });
+      setRunResults((prev) => ({ ...prev, [q.id]: res.data }));
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to execute code against sample test cases.');
+    } finally {
+      setIsRunningCode(false);
+    }
+  }, [isTerminated, isRunningCode, codingLanguage, codingCode, getStarterCode]);
+
+  const handleSubmitCode = useCallback(async (q: Question) => {
+    const activeAttemptId = attemptIdRef.current;
+    if (!activeAttemptId || isTerminated || isSubmittingCode) return;
+    const lang = codingLanguage[q.id] || q.programming_language || 'python';
+    const code = codingCode[q.id] ?? getStarterCode(lang);
+
+    setIsSubmittingCode(true);
+    try {
+      const res = await apiClient.post(`/assessments/attempts/${activeAttemptId}/submit-code/`, {
+        question_id: q.id,
+        code,
+        language: lang
+      });
+      setSubmitResults((prev) => ({ ...prev, [q.id]: res.data }));
+      setSaveStatus('saved');
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to submit code for grading.');
+    } finally {
+      setIsSubmittingCode(false);
+    }
+  }, [isTerminated, isSubmittingCode, codingLanguage, codingCode, getStarterCode]);
+
+  const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, questionId: number, lang: string) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const currentVal = textarea.value;
+      const newVal = currentVal.substring(0, start) + '    ' + currentVal.substring(end);
+      textarea.value = newVal;
+      textarea.selectionStart = textarea.selectionEnd = start + 4;
+      handleCodingCodeChange(questionId, newVal, lang);
+    }
+  };
 
   // 6. Server-authoritative timer
   useEffect(() => {
@@ -643,10 +802,25 @@ export const AssessmentSession: React.FC = () => {
     );
   }
 
-  const questions = attempt.questions || [];
+  const codingQFromAttempt = (attempt as any).coding_question || (attempt as any).assessment?.coding_question;
+  const rawQuestions = attempt.questions || [];
+  const questions = (codingQFromAttempt && !rawQuestions.some((q: any) => q.id === codingQFromAttempt.id || q.question_type === 'CODING'))
+    ? [...rawQuestions, { ...codingQFromAttempt, question_type: 'CODING' }]
+    : rawQuestions;
   const currentQuestion: Question | undefined = questions[currentIndex];
   const totalQuestions = questions.length;
-  const answeredCount = Object.keys(answers).filter((k) => (answers[Number(k)] || []).length > 0).length;
+  const isQuestionAnswered = (q: Question) => {
+    if (q.question_type === 'CODING') {
+      return Boolean(submitResults[q.id] || (codingCode[q.id] && codingCode[q.id].trim().length > 0));
+    }
+    return (answers[q.id] || []).length > 0;
+  };
+  const answeredCount = questions.filter(isQuestionAnswered).length;
+
+  const currentCodingLang = (currentQuestion ? codingLanguage[currentQuestion.id] : undefined) || currentQuestion?.programming_language || 'python';
+  const activeCode = currentQuestion ? (codingCode[currentQuestion.id] ?? getStarterCode(currentCodingLang)) : '';
+  const currentRunResult = currentQuestion ? runResults[currentQuestion.id] : null;
+  const currentSubmitResult = currentQuestion ? submitResults[currentQuestion.id] : null;
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 flex flex-col relative select-none">
@@ -785,92 +959,471 @@ export const AssessmentSession: React.FC = () => {
           )}
 
           {currentQuestion ? (
-            <div className={`bg-white rounded-2xl border shadow-sm p-6 sm:p-8 space-y-6 transition-all ${
-              isTerminated ? 'border-red-300 opacity-60 pointer-events-none' : 'border-slate-200'
-            }`}>
-              {/* Question Meta Header */}
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold bg-primary-50 text-primary-900 px-3 py-1 rounded-md">
-                    Question {currentIndex + 1} of {totalQuestions}
-                  </span>
-                  <span className="text-[11px] font-medium bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md">
-                    Topic: {currentQuestion.topic_tag}
-                  </span>
+            currentQuestion.question_type === 'CODING' ? (
+              /* =======================================================
+                 CODING QUESTION WORKSPACE (PS PORTAL / HACKERRANK STYLE)
+                 ======================================================= */
+              <div className={`space-y-6 transition-all ${
+                isTerminated ? 'opacity-60 pointer-events-none' : ''
+              }`}>
+                {/* 1. Problem Statement Card */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-8 space-y-6">
+                  {/* Meta header */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold bg-primary-50 text-primary-900 px-3 py-1 rounded-md">
+                        Question {currentIndex + 1} of {totalQuestions}
+                      </span>
+                      <span className="text-xs font-bold bg-purple-100 text-purple-800 px-2.5 py-1 rounded-md flex items-center gap-1">
+                        <Code2 className="w-3.5 h-3.5" /> CODING ASSESSMENT
+                      </span>
+                      <span className="text-xs font-bold bg-indigo-100 text-indigo-800 px-2.5 py-1 rounded-md uppercase font-mono">
+                        {currentCodingLang}
+                      </span>
+                      <span className={`text-[11px] font-bold px-2.5 py-1 rounded-md uppercase ${
+                        (currentQuestion.difficulty || 'EASY').toUpperCase() === 'EASY'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : (currentQuestion.difficulty || '').toUpperCase() === 'HARD'
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        Difficulty: {currentQuestion.difficulty || 'EASY'}
+                      </span>
+                      <span className="text-[11px] font-medium bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md">
+                        Topic: {currentQuestion.topic_tag}
+                      </span>
+                    </div>
+                    <div className="text-xs font-bold text-slate-700 bg-slate-100 px-3 py-1 rounded-md">
+                      {currentQuestion.marks} Marks
+                    </div>
+                  </div>
+
+                  {/* Title & Description */}
+                  <div className="space-y-3">
+                    <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                      {currentQuestion.title || currentQuestion.text}
+                    </h2>
+                    <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
+                      {currentQuestion.problem_statement || currentQuestion.text}
+                    </div>
+                  </div>
+
+                  {/* Formats and Constraints Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Input Format
+                      </span>
+                      <p className="text-xs text-slate-700 whitespace-pre-wrap font-mono">
+                        {currentQuestion.input_format || 'Standard Input (stdin)'}
+                      </p>
+                    </div>
+
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Output Format
+                      </span>
+                      <p className="text-xs text-slate-700 whitespace-pre-wrap font-mono">
+                        {currentQuestion.output_format || 'Standard Output (stdout)'}
+                      </p>
+                    </div>
+
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Constraints
+                      </span>
+                      <p className="text-xs text-slate-700 whitespace-pre-wrap font-mono">
+                        {currentQuestion.constraints || 'Time Limit: 4.0s | Memory: 256MB'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Exactly 2 Sample Test Cases */}
+                  <div className="space-y-3 pt-2">
+                    <div className="flex items-center gap-2">
+                      <Terminal className="w-4 h-4 text-primary-900" />
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                        Sample Test Cases (Visible)
+                      </h3>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {(currentQuestion.sample_test_cases || []).slice(0, 2).map((sample: any, sIdx: number) => (
+                        <div key={sIdx} className="bg-slate-900 text-slate-100 rounded-xl p-4 border border-slate-800 space-y-2.5 text-xs font-mono">
+                          <div className="flex items-center justify-between pb-1.5 border-b border-slate-800 font-sans text-[11px]">
+                            <span className="font-bold text-slate-300">Sample Test Case {sIdx + 1}</span>
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-bold border border-emerald-800">
+                              Public
+                            </span>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] uppercase font-sans text-slate-400 font-bold">Input:</span>
+                            <pre className="bg-slate-950 p-2.5 rounded-lg text-slate-200 overflow-x-auto text-xs">
+                              {sample.input || '(empty)'}
+                            </pre>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] uppercase font-sans text-slate-400 font-bold">Expected Output:</span>
+                            <pre className="bg-slate-950 p-2.5 rounded-lg text-emerald-400 overflow-x-auto text-xs">
+                              {sample.expected_output || sample.output || ''}
+                            </pre>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xs font-bold text-slate-500">
-                  {currentQuestion.marks} Mark{currentQuestion.marks > 1 ? 's' : ''}
+
+                {/* 2. Online Code Editor Card */}
+                <div className="bg-slate-950 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
+                  {/* Editor Header Bar */}
+                  <div className="bg-slate-900/90 px-4 py-3 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full bg-red-500/80"></span>
+                      <span className="w-3 h-3 rounded-full bg-amber-500/80"></span>
+                      <span className="w-3 h-3 rounded-full bg-emerald-500/80"></span>
+                      <span className="text-xs font-mono text-slate-400 font-bold ml-2">
+                        solution.{currentCodingLang === 'python' ? 'py' : currentCodingLang === 'java' ? 'java' : currentCodingLang === 'cpp' ? 'cpp' : 'c'}
+                      </span>
+                      {/* Language selector */}
+                      <div className="flex items-center gap-1.5 ml-2">
+                        <label htmlFor="coding-lang-select" className="text-[11px] text-slate-400 font-medium hidden sm:inline">
+                          Language:
+                        </label>
+                        <select
+                          id="coding-lang-select"
+                          value={currentCodingLang.toLowerCase()}
+                          onChange={(e) => {
+                            const newLang = e.target.value;
+                            const starter = getStarterCode(newLang);
+                            handleCodingCodeChange(currentQuestion.id, starter, newLang);
+                          }}
+                          disabled={isTerminated}
+                          className="bg-slate-800 text-accent-300 font-mono text-xs font-bold px-2 py-1 rounded border border-slate-700 focus:outline-none focus:border-accent-400 cursor-pointer"
+                        >
+                          <option value="c">C</option>
+                          <option value="cpp">C++</option>
+                          <option value="java">Java</option>
+                          <option value="python">Python</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => handleCodingCodeChange(currentQuestion.id, getStarterCode(currentCodingLang), currentCodingLang)}
+                        className="text-xs text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1.5 py-1 px-2.5 rounded hover:bg-slate-800"
+                        title="Reset code to standard starter template"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Reset Template</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Textarea Code Editor */}
+                  <div className="relative">
+                    <textarea
+                      value={activeCode}
+                      onChange={(e) => handleCodingCodeChange(currentQuestion.id, e.target.value, currentCodingLang)}
+                      onKeyDown={(e) => handleEditorKeyDown(e, currentQuestion.id, currentCodingLang)}
+                      disabled={isTerminated}
+                      rows={14}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      className="w-full font-mono text-xs sm:text-sm bg-slate-950 text-slate-100 p-4 border-0 focus:outline-none focus:ring-0 resize-y leading-relaxed font-normal selection:bg-primary-900 placeholder:text-slate-600"
+                      placeholder="Write your code solution here..."
+                    />
+                  </div>
+
+                  {/* Editor Action Toolbar */}
+                  <div className="bg-slate-900 px-5 py-3.5 border-t border-slate-800 flex items-center justify-between flex-wrap gap-3">
+                    <p className="text-[11px] text-slate-400 hidden sm:block">
+                      <span className="font-semibold text-slate-300">Run Code:</span> Tests 2 visible sample cases. 
+                      <span className="font-semibold text-slate-300 ml-2">Submit Code:</span> Server grades all 6 test cases.
+                    </p>
+
+                    <div className="flex items-center gap-3 ml-auto">
+                      <button
+                        onClick={() => handleRunCode(currentQuestion)}
+                        disabled={isRunningCode || isSubmittingCode || isTerminated}
+                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm border border-slate-700 disabled:opacity-50"
+                      >
+                        <Play className={`w-3.5 h-3.5 text-accent-300 ${isRunningCode ? 'animate-spin' : ''}`} />
+                        <span>{isRunningCode ? 'Running...' : 'Run Code (2 Samples)'}</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleSubmitCode(currentQuestion)}
+                        disabled={isRunningCode || isSubmittingCode || isTerminated}
+                        className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-md disabled:opacity-50"
+                      >
+                        <CheckCircle2 className={`w-4 h-4 ${isSubmittingCode ? 'animate-spin' : ''}`} />
+                        <span>{isSubmittingCode ? 'Evaluating...' : 'Submit Code (All 6 Cases)'}</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              {/* Question Text */}
-              <div className="text-base sm:text-lg font-medium text-slate-900 leading-relaxed">
-                {currentQuestion.text}
-              </div>
+                {/* 3. Test Results & Grading Console */}
+                {(currentSubmitResult || currentRunResult) && (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+                    {/* Header Banner */}
+                    <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <Terminal className="w-4 h-4 text-slate-700" />
+                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                          Execution &amp; Evaluation Results
+                        </h4>
+                      </div>
 
-              {/* Options List */}
-              <div className="space-y-3 pt-2">
-                {currentQuestion.options.map((option) => {
-                  const isSelected = (answers[currentQuestion.id] || []).includes(option.id);
-                  const isMultiple = currentQuestion.question_type === 'MULTIPLE_CHOICE';
+                      {currentSubmitResult ? (
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-bold px-3 py-1 rounded-full ${
+                            currentSubmitResult.total_passed === currentSubmitResult.total_count
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                              : 'bg-amber-100 text-amber-800 border border-amber-300'
+                          }`}>
+                            {currentSubmitResult.total_passed} / {currentSubmitResult.total_count} Passed
+                            ({((currentSubmitResult.total_passed / currentSubmitResult.total_count) * 100).toFixed(0)}%)
+                          </span>
+                          <span className="text-xs font-bold text-slate-500">
+                            {((currentSubmitResult.total_passed / currentSubmitResult.total_count) * currentQuestion.marks).toFixed(1)} / {currentQuestion.marks} Marks
+                          </span>
+                        </div>
+                      ) : (
+                        <span className={`text-xs font-bold px-3 py-1 rounded-full ${
+                          currentRunResult?.all_sample_passed
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {currentRunResult?.sample_passed} / {currentRunResult?.sample_total} Sample Cases Passed
+                        </span>
+                      )}
+                    </div>
 
-                  return (
-                    <div
-                      key={option.id}
-                      onClick={() => !isTerminated && handleOptionSelect(currentQuestion.id, option.id, isMultiple)}
-                      className={`p-4 rounded-xl border text-sm font-medium transition-all cursor-pointer flex items-center gap-3.5 select-none ${
-                        isSelected
-                          ? 'border-primary-900 bg-primary-50/50 text-primary-950 ring-1 ring-primary-900'
-                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
-                      }`}
+                    {/* Sample Test Case Results (Visible details) */}
+                    <div className="space-y-3">
+                      <h5 className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                        Visible Sample Test Cases (2/2)
+                      </h5>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {(currentSubmitResult?.sample_results || currentRunResult?.sample_results || []).map((res: any, rIdx: number) => (
+                          <div key={rIdx} className={`rounded-xl border p-4 space-y-2 text-xs font-mono ${
+                            res.passed ? 'border-emerald-200 bg-emerald-50/40' : 'border-rose-200 bg-rose-50/40'
+                          }`}>
+                            <div className="flex items-center justify-between pb-1 border-b border-black/5 font-sans">
+                              <span className="font-bold text-slate-800">Sample {res.test_index}</span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                res.passed ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
+                              }`}>
+                                {res.status} ({res.execution_time_ms || 0}ms)
+                              </span>
+                            </div>
+
+                            <div className="space-y-0.5">
+                              <span className="text-[10px] uppercase font-sans text-slate-500 font-semibold">Input:</span>
+                              <pre className="bg-white p-2 rounded border border-slate-200 text-slate-800 text-xs overflow-x-auto">
+                                {res.input || '(empty)'}
+                              </pre>
+                            </div>
+
+                            <div className="space-y-0.5">
+                              <span className="text-[10px] uppercase font-sans text-slate-500 font-semibold">Expected:</span>
+                              <pre className="bg-white p-2 rounded border border-slate-200 text-emerald-700 text-xs overflow-x-auto">
+                                {res.expected_output}
+                              </pre>
+                            </div>
+
+                            <div className="space-y-0.5">
+                              <span className="text-[10px] uppercase font-sans text-slate-500 font-semibold">Your Output:</span>
+                              <pre className={`bg-white p-2 rounded border text-xs overflow-x-auto ${
+                                res.passed ? 'border-emerald-200 text-emerald-800' : 'border-rose-200 text-rose-800 font-bold'
+                              }`}>
+                                {res.actual_output || '(no output)'}
+                              </pre>
+                            </div>
+
+                            {res.error && (
+                              <div className="p-2 bg-rose-100 rounded text-[10px] text-rose-900 whitespace-pre-wrap font-mono">
+                                {res.error}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Hidden Test Case Results (Summary only - never leaks input or output) */}
+                    {currentSubmitResult && (
+                      <div className="space-y-3 pt-2">
+                        <div className="flex items-center justify-between">
+                          <h5 className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            Server-Evaluated Hidden Test Cases (4/4)
+                          </h5>
+                          <span className="text-[11px] text-slate-500 font-medium">
+                            {currentSubmitResult.hidden_passed} / {currentSubmitResult.hidden_total} Passed
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          {(currentSubmitResult.hidden_summary?.results || []).map((hRes: any, hIdx: number) => (
+                            <div
+                              key={hIdx}
+                              className={`p-3 rounded-xl border flex flex-col items-center justify-center text-center space-y-1 ${
+                                hRes.passed
+                                  ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+                                  : 'border-rose-300 bg-rose-50 text-rose-900'
+                              }`}
+                            >
+                              <div className="flex items-center gap-1">
+                                <Lock className="w-3 h-3 opacity-60" />
+                                <span className="text-xs font-bold">Hidden Case {hRes.test_index}</span>
+                              </div>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                hRes.passed ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
+                              }`}>
+                                {hRes.status}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {hRes.execution_time_ms || 0}ms
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <p className="text-[10px] text-slate-400 italic">
+                          *Strict academic integrity safeguard: Inputs and outputs of hidden test cases are strictly protected on the evaluation server and never returned to the browser.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Navigation Bar */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex items-center justify-between">
+                  <button
+                    onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                    disabled={currentIndex === 0}
+                    className="px-4 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" /> Previous
+                  </button>
+
+                  {currentIndex < totalQuestions - 1 ? (
+                    <button
+                      onClick={() => setCurrentIndex((prev) => Math.min(totalQuestions - 1, prev + 1))}
+                      className="px-5 py-2 bg-primary-900 hover:bg-primary-800 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
                     >
+                      Next <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setShowSubmitModal(true)}
+                      disabled={isTerminated}
+                      className="px-6 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      Review &amp; Submit <CheckCircle2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* =======================================================
+                 STANDARD MCQ QUESTION CARD
+                 ======================================================= */
+              <div className={`bg-white rounded-2xl border shadow-sm p-6 sm:p-8 space-y-6 transition-all ${
+                isTerminated ? 'border-red-300 opacity-60 pointer-events-none' : 'border-slate-200'
+              }`}>
+                {/* Question Meta Header */}
+                <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold bg-primary-50 text-primary-900 px-3 py-1 rounded-md">
+                      Question {currentIndex + 1} of {totalQuestions}
+                    </span>
+                    <span className="text-[11px] font-medium bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md">
+                      Topic: {currentQuestion.topic_tag}
+                    </span>
+                  </div>
+                  <div className="text-xs font-bold text-slate-500">
+                    {currentQuestion.marks} Mark{currentQuestion.marks > 1 ? 's' : ''}
+                  </div>
+                </div>
+
+                {/* Question Text */}
+                <div className="text-base sm:text-lg font-medium text-slate-900 leading-relaxed">
+                  {currentQuestion.text}
+                </div>
+
+                {/* Options List */}
+                <div className="space-y-3 pt-2">
+                  {currentQuestion.options.map((option) => {
+                    const isSelected = (answers[currentQuestion.id] || []).includes(option.id);
+                    const isMultiple = currentQuestion.question_type === 'MULTIPLE_CHOICE';
+
+                    return (
                       <div
-                        className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${
-                          isMultiple ? 'rounded-md' : 'rounded-full'
-                        } ${
+                        key={option.id}
+                        onClick={() => !isTerminated && handleOptionSelect(currentQuestion.id, option.id, isMultiple)}
+                        className={`p-4 rounded-xl border text-sm font-medium transition-all cursor-pointer flex items-center gap-3.5 select-none ${
                           isSelected
-                            ? 'bg-primary-900 text-white'
-                            : 'border border-slate-300 bg-white'
+                            ? 'border-primary-900 bg-primary-50/50 text-primary-950 ring-1 ring-primary-900'
+                            : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
                         }`}
                       >
-                        {isSelected && (
-                          <div className={isMultiple ? 'text-[10px] font-bold' : 'w-2 h-2 rounded-full bg-white'} />
-                        )}
+                        <div
+                          className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${
+                            isMultiple ? 'rounded-md' : 'rounded-full'
+                          } ${
+                            isSelected
+                              ? 'bg-primary-900 text-white'
+                              : 'border border-slate-300 bg-white'
+                          }`}
+                        >
+                          {isSelected && (
+                            <div className={isMultiple ? 'text-[10px] font-bold' : 'w-2 h-2 rounded-full bg-white'} />
+                          )}
+                        </div>
+                        <span className="flex-grow">{option.text}</span>
                       </div>
-                      <span className="flex-grow">{option.text}</span>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
 
-              {/* Navigation Bar */}
-              <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
-                <button
-                  onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
-                  disabled={currentIndex === 0}
-                  className="px-4 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" /> Previous
-                </button>
+                {/* Navigation Bar */}
+                <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
+                  <button
+                    onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                    disabled={currentIndex === 0}
+                    className="px-4 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" /> Previous
+                  </button>
 
-                {currentIndex < totalQuestions - 1 ? (
-                  <button
-                    onClick={() => setCurrentIndex((prev) => Math.min(totalQuestions - 1, prev + 1))}
-                    className="px-5 py-2 bg-primary-900 hover:bg-primary-800 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
-                  >
-                    Next <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setShowSubmitModal(true)}
-                    disabled={isTerminated}
-                    className="px-6 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
-                  >
-                    Review &amp; Submit <CheckCircle2 className="w-3.5 h-3.5" />
-                  </button>
-                )}
+                  {currentIndex < totalQuestions - 1 ? (
+                    <button
+                      onClick={() => setCurrentIndex((prev) => Math.min(totalQuestions - 1, prev + 1))}
+                      className="px-5 py-2 bg-primary-900 hover:bg-primary-800 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
+                    >
+                      Next <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setShowSubmitModal(true)}
+                      disabled={isTerminated}
+                      className="px-6 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      Review &amp; Submit <CheckCircle2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )
           ) : (
             <div className="p-8 bg-white rounded-2xl border text-center text-slate-500">
               No questions found for this assessment.
@@ -887,14 +1440,15 @@ export const AssessmentSession: React.FC = () => {
 
             <div className="grid grid-cols-5 gap-2 pt-2">
               {questions.map((q, idx) => {
-                const isAnswered = (answers[q.id] || []).length > 0;
+                const isAnswered = isQuestionAnswered(q);
                 const isCurrent = idx === currentIndex;
+                const isCoding = q.question_type === 'CODING';
 
                 return (
                   <button
                     key={q.id}
                     onClick={() => setCurrentIndex(idx)}
-                    className={`h-9 rounded-lg text-xs font-bold transition-all flex items-center justify-center border ${
+                    className={`h-9 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 border ${
                       isCurrent
                         ? 'ring-2 ring-primary-900 border-primary-900'
                         : ''
@@ -904,7 +1458,8 @@ export const AssessmentSession: React.FC = () => {
                         : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
                     }`}
                   >
-                    {idx + 1}
+                    <span>{idx + 1}</span>
+                    {isCoding && <Code2 className="w-3 h-3 opacity-90 text-amber-300" />}
                   </button>
                 );
               })}

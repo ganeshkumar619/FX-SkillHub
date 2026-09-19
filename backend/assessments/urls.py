@@ -8,7 +8,14 @@ from .views import (
     AutosaveAnswerView,
     LogProctoringEventView,
     SubmitAssessmentView,
-    AssessmentAttemptResultView
+    AssessmentAttemptResultView,
+    RunCodeView,
+    SubmitCodeView,
+    CourseCodingQuestionListView,
+    CodingQuestionDetailView,
+    CodingQuestionValidateView,
+    AICodingQuestionGenerateView,
+    CodingQuestionPublishView
 )
 
 urlpatterns = [
@@ -21,4 +28,15 @@ urlpatterns = [
     path('attempts/<uuid:attempt_id>/events/', LogProctoringEventView.as_view(), name='log_proctoring_event'),
     path('attempts/<uuid:attempt_id>/submit/', SubmitAssessmentView.as_view(), name='submit_assessment'),
     path('attempts/<uuid:attempt_id>/result/', AssessmentAttemptResultView.as_view(), name='assessment_result'),
+    
+    # Coding Question Examination Endpoints
+    path('attempts/<uuid:attempt_id>/run-code/', RunCodeView.as_view(), name='attempt_run_code'),
+    path('attempts/<uuid:attempt_id>/submit-code/', SubmitCodeView.as_view(), name='attempt_submit_code'),
+    
+    # Faculty & AI Coding Question Builder Endpoints
+    path('courses/<int:course_id>/coding-questions/', CourseCodingQuestionListView.as_view(), name='course_coding_questions'),
+    path('coding-questions/<int:question_id>/', CodingQuestionDetailView.as_view(), name='coding_question_detail'),
+    path('coding-questions/<int:question_id>/validate/', CodingQuestionValidateView.as_view(), name='coding_question_validate'),
+    path('coding-questions/<int:question_id>/publish/', CodingQuestionPublishView.as_view(), name='coding_question_publish'),
+    path('coding-questions/ai-generate/', AICodingQuestionGenerateView.as_view(), name='ai_coding_question_generate'),
 ]

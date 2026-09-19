@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate, get_user_model
 from catalogue.models import Department
-from .validators import validate_institutional_email, normalize_email
+from .validators import validate_institutional_email, validate_standard_email, normalize_email
 
 from django.db.models import Q
 from .models import User, EmailVerificationOTP, ApprovedStudentDirectory
@@ -146,13 +146,26 @@ class RegisterSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
     password = serializers.CharField(write_only=True)
+    role = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate(self, attrs):
-        username = attrs.get('username', '').strip()
+        raw_login = attrs.get('username', '').strip()
         password = attrs.get('password')
+        portal_role = attrs.get('role', '').strip().upper() if attrs.get('role') else None
 
-        # Match user by username or email
-        user = User.objects.filter(Q(username__iexact=username) | Q(email__iexact=username)).first()
+        if not raw_login or not password:
+            raise serializers.ValidationError('Email/Username and password are required.')
+
+        normalized_email = normalize_email(raw_login) if '@' in raw_login else None
+
+        # Look up user by exact normalized email if email format provided, else by username
+        if normalized_email:
+            user = User.objects.filter(email__iexact=normalized_email).first()
+            if not user:
+                user = User.objects.filter(username__iexact=normalized_email).first()
+        else:
+            user = User.objects.filter(username__iexact=raw_login).first()
+
         if not user:
             raise serializers.ValidationError('Invalid username or password.')
 
@@ -166,8 +179,32 @@ class LoginSerializer(serializers.Serializer):
                 raise serializers.ValidationError('This student account has been blocked by Academic Administration.')
             if user.verification_status == 'PENDING_EMAIL_VERIFICATION' or not user.is_active:
                 raise serializers.ValidationError('Please verify your institutional email first.')
+        elif user.role in ('FACULTY', 'MENTOR'):
+            if user.verification_status == 'BLOCKED':
+                raise serializers.ValidationError('This faculty account has been blocked by Academic Administration.')
+            if not user.is_active:
+                raise serializers.ValidationError('This faculty account has been disabled or deactivated by Academic Administration.')
+            if user.verification_status == 'PENDING_EMAIL_VERIFICATION':
+                raise serializers.ValidationError('Please activate your Faculty account and set your password using the invitation email.')
+            if normalized_email and user.email.strip().lower() != normalized_email:
+                raise serializers.ValidationError('Access denied. Invalid faculty email identity.')
         elif not user.is_active:
             raise serializers.ValidationError('This user account has been disabled or deactivated by Academic Administration.')
+
+        # Server-side portal role verification
+        if portal_role:
+            if portal_role == 'FACULTY':
+                if user.role not in ('FACULTY', 'MENTOR'):
+                    raise serializers.ValidationError('Access denied. This account does not have Faculty privileges.')
+                # Verify that faculty logged in with their exact provisioned email address
+                if normalized_email and user.email.strip().lower() != normalized_email:
+                    raise serializers.ValidationError('Access denied. Invalid faculty email identity.')
+            elif portal_role == 'STUDENT':
+                if user.role != 'STUDENT':
+                    raise serializers.ValidationError('Access denied. This account does not have Student privileges.')
+            elif portal_role == 'ADMIN':
+                if not user.is_admin_user():
+                    raise serializers.ValidationError('Access denied. This account does not have Administrator privileges.')
 
         attrs['user'] = user
         return attrs
@@ -221,9 +258,9 @@ class AdminFacultyCreateSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(default=True)
 
     def validate_email(self, value):
-        clean_email = validate_institutional_email(value)
+        clean_email = validate_standard_email(value)
         if User.objects.filter(email__iexact=clean_email).exists():
-            raise serializers.ValidationError("An account with this institutional email already exists.")
+            raise serializers.ValidationError("An account with this email already exists.")
         return clean_email
 
     def validate(self, attrs):
@@ -246,15 +283,10 @@ class AdminFacultyCreateSerializer(serializers.Serializer):
             first_name = parts[0]
             last_name = parts[1] if len(parts) > 1 else ''
 
-        # Unique username generation from email prefix
-        base_username = email.split('@')[0].replace('.', '_').replace('-', '_').lower()
-        username = base_username
-        counter = 1
-        while User.objects.filter(username=username).exists():
-            username = f"{base_username}_{counter}"
-            counter += 1
+        # Store exact normalized email as the faculty account's unique login identity
+        username = email
 
-        raw_password = validated_data.get('password') or 'Faculty@FXEC2026!'
+        raw_password = validated_data.get('password')
         register_num = validated_data.get('register_number') or validated_data.get('faculty_id')
 
         user = User.objects.create(
@@ -268,10 +300,29 @@ class AdminFacultyCreateSerializer(serializers.Serializer):
             role='FACULTY',
             is_staff=True,
             is_active=validated_data.get('is_active', True),
+            verification_status='VERIFIED' if raw_password else 'PENDING_EMAIL_VERIFICATION'
         )
-        user.set_password(raw_password)
+        if raw_password:
+            user.set_password(raw_password)
+        else:
+            user.set_unusable_password()
         user.save()
         return user
+
+
+class FacultyInvitationVerifySerializer(serializers.Serializer):
+    token = serializers.CharField(required=True)
+
+
+class FacultySetPasswordSerializer(serializers.Serializer):
+    token = serializers.CharField(required=True)
+    password = serializers.CharField(required=True, min_length=8, write_only=True)
+    password_confirm = serializers.CharField(required=True, min_length=8, write_only=True)
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['password_confirm']:
+            raise serializers.ValidationError({'password_confirm': 'Passwords do not match.'})
+        return attrs
 
 
 class AdminFacultyUpdateSerializer(serializers.ModelSerializer):

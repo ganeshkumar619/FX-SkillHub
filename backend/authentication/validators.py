@@ -59,3 +59,26 @@ def validate_institutional_email(email: str) -> str:
         )
 
     return clean_email
+
+
+def validate_standard_email(email: str) -> str:
+    """
+    Validates that the provided email is non-empty and follows valid email structure.
+    Does NOT restrict email domain, allowing any syntactically valid domain (e.g., gmail.com,
+    yahoo.com, outlook.com, francisxavier.ac.in, etc.).
+    Returns normalized lowercase email on success or raises serializers.ValidationError.
+    """
+    clean_email = normalize_email(email)
+
+    if not clean_email:
+        raise serializers.ValidationError("Faculty email address is required.")
+
+    if len(clean_email) > 150:
+        raise serializers.ValidationError("Email address must not exceed 150 characters.")
+
+    # Standard email syntax check
+    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not re.match(email_regex, clean_email):
+        raise serializers.ValidationError("Please provide a valid email address.")
+
+    return clean_email

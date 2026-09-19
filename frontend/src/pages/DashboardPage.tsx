@@ -141,7 +141,7 @@ export const DashboardPage: React.FC = () => {
             <Award className="w-10 h-10 text-slate-300 mx-auto" />
             <h3 className="font-bold text-slate-800 text-sm">No Certificates Issued Yet</h3>
             <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-              Complete 100% of your course learning modules and pass the final evaluation assessment to claim your official accredited institutional certificate.
+              Complete all required course learning modules and pass the final evaluation assessment to claim your official accredited institutional certificate.
             </p>
           </div>
         ) : (
@@ -274,26 +274,24 @@ export const DashboardPage: React.FC = () => {
                     </span>
                     <h3 className="font-bold text-slate-900 text-base mt-1.5">{enr.course.title}</h3>
                   </div>
-                  <span className="text-xs font-bold text-primary-800">{enr.progress_percent}% Complete</span>
+                  <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${
+                    enr.is_completed 
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' 
+                      : 'bg-amber-100 text-amber-800 border border-amber-200'
+                  }`}>
+                    {enr.is_completed ? '✓ Completed' : 'In Progress'}
+                  </span>
                 </div>
 
-                {/* Progress Bar */}
-                <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
-                  <div 
-                    className="bg-accent-500 h-2.5 rounded-full transition-all duration-500" 
-                    style={{ width: `${enr.progress_percent}%` }}
-                  ></div>
-                </div>
-
-                <div className="flex justify-between items-center pt-2 text-xs">
+                <div className="flex justify-between items-center pt-2 text-xs border-t border-slate-100">
                   <span className="text-slate-500">
-                    Status: {enr.is_completed ? 'Completed' : 'In Progress'}
+                    Course Modules
                   </span>
                   <Link
                     to={`/learn/${enr.course.slug}`}
-                    className="font-bold text-primary-900 hover:text-primary-700 flex items-center gap-1"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-900 hover:bg-primary-800 text-white font-bold rounded-lg transition-colors shadow-xs"
                   >
-                    Resume Learning <ArrowRight className="w-3 h-3" />
+                    Open Course Modules <ArrowRight className="w-3.5 h-3.5 text-accent-400" />
                   </Link>
                 </div>
               </div>

@@ -12,8 +12,8 @@ import {
   ArrowRight, 
   ExternalLink, 
   BrainCircuit, 
-  PlayCircle,
-  FileText
+  FileText,
+  Lock
 } from 'lucide-react';
 
 export const CourseDetail: React.FC = () => {
@@ -22,6 +22,7 @@ export const CourseDetail: React.FC = () => {
   const navigate = useNavigate();
   const [course, setCourse] = useState<Course | null>(null);
   const [progressInfo, setProgressInfo] = useState<any>(null);
+  const [finalAssessment, setFinalAssessment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [enrolling, setEnrolling] = useState(false);
 
@@ -32,8 +33,12 @@ export const CourseDetail: React.FC = () => {
         setCourse(res.data);
 
         if (user) {
-          const progRes = await apiClient.get(`/learning/course-progress/${slug}/`);
-          setProgressInfo(progRes.data);
+          const [progRes, aRes] = await Promise.allSettled([
+            apiClient.get(`/learning/course-progress/${slug}/`),
+            apiClient.get(`/assessments/course/${res.data.id}/final-assessment/`)
+          ]);
+          if (progRes.status === 'fulfilled') setProgressInfo(progRes.value.data);
+          if (aRes.status === 'fulfilled') setFinalAssessment(aRes.value.data);
         }
       } catch (err) {
         console.error(err);
@@ -176,52 +181,144 @@ export const CourseDetail: React.FC = () => {
               </div>
 
               <div className="space-y-4 pt-1">
-                {course.modules?.map((m) => (
-                  <div 
-                    key={m.id}
-                    className="p-5 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <span className="w-6 h-6 rounded-full bg-primary-900 text-white font-bold text-xs flex items-center justify-center">
-                          {m.order}
-                        </span>
-                        <h4 className="text-sm font-bold text-slate-900">{m.title}</h4>
+                {course.modules?.map((m) => {
+                  const isModuleDone = Boolean(progressInfo?.module_progress?.[m.id]);
+                  const moduleUrl = `/courses/${course.id}/modules/${m.id}`;
+
+                  return (
+                    <div 
+                      key={m.id}
+                      className="p-6 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-4 transition-all hover:border-slate-300"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2.5 py-0.5 rounded-lg bg-primary-950 text-accent-400 font-extrabold text-[11px] tracking-wider uppercase">
+                            MODULE {m.order}
+                          </span>
+                          <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-md border ${
+                            m.is_required
+                              ? 'bg-amber-50 text-amber-900 border-amber-200'
+                              : 'bg-slate-100 text-slate-600 border-slate-200'
+                          }`}>
+                            {m.is_required ? 'Required' : 'Optional'}
+                          </span>
+                        </div>
+
+                        {isModuleDone ? (
+                          <span className="px-3 py-1 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-800 font-bold text-xs flex items-center gap-1.5">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <span>✓ Module Completed</span>
+                          </span>
+                        ) : (
+                          <span className="px-3 py-1 rounded-xl bg-slate-100 text-slate-600 font-semibold text-xs flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            <span>In Progress</span>
+                          </span>
+                        )}
                       </div>
-                      <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5" />
-                        {m.duration_minutes} mins
-                      </span>
-                    </div>
 
-                    <p className="text-xs text-slate-600 pl-8">{m.description}</p>
+                      <div>
+                        <h4 className="text-base font-bold text-slate-900">{m.title}</h4>
+                        {m.description && (
+                          <p className="text-xs text-slate-600 mt-1 leading-relaxed">{m.description}</p>
+                        )}
+                      </div>
 
-                    {/* Lessons list */}
-                    {m.lessons && m.lessons.length > 0 && (
-                      <div className="pl-8 pt-2 space-y-2 border-t border-slate-200/60 mt-2">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                          Structured Lessons:
-                        </span>
-                        <div className="grid grid-cols-1 gap-2">
-                          {m.lessons.map((lsn) => (
-                            <div key={lsn.id} className="p-2.5 bg-white rounded-xl border border-slate-200 text-xs flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <FileText className="w-3.5 h-3.5 text-primary-700" />
-                                <span className="font-semibold text-slate-800">
-                                  {lsn.order}. {lsn.title}
+                      {/* Lessons list */}
+                      {m.lessons && m.lessons.length > 0 && (
+                        <div className="pt-2 space-y-1.5 border-t border-slate-200/60">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                            Included Lessons:
+                          </span>
+                          <div className="grid grid-cols-1 gap-1.5">
+                            {m.lessons.map((lsn) => (
+                              <div key={lsn.id} className="p-2.5 bg-white rounded-xl border border-slate-200 text-xs flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <FileText className="w-3.5 h-3.5 text-primary-700" />
+                                  <span className="font-semibold text-slate-800">
+                                    {lsn.order}. {lsn.title}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600">
+                                  {lsn.duration_minutes || 15}m
                                 </span>
                               </div>
-                              <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600">
-                                {lsn.content_type} • {lsn.duration_minutes}m
-                              </span>
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </div>
+                      )}
+
+                      <div className="pt-3 border-t border-slate-200/60 flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-xs text-slate-500 font-medium">
+                          {m.duration_minutes || 60} mins • {m.lessons?.length || 0} Lessons
+                        </span>
+                        {isEnrolled ? (
+                          <Link
+                            to={moduleUrl}
+                            className="px-5 py-2 bg-primary-900 hover:bg-primary-800 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                          >
+                            <span>Open Module</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </Link>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleEnroll}
+                            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <span>Enroll to Open</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </div>
+
+              {/* Final Assessment Unlocked / Locked Card */}
+              {isEnrolled && (
+                <div className="pt-2">
+                  {(progressInfo?.assessment_unlocked || progressInfo?.eligibility?.eligible) ? (
+                    <div className="p-6 bg-gradient-to-r from-emerald-500/15 via-teal-500/15 to-emerald-500/15 border-2 border-emerald-500 rounded-3xl shadow-sm space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Award className="w-5 h-5 text-emerald-700" />
+                            <h3 className="text-base font-black text-emerald-950">
+                              ✓ All Modules Completed
+                            </h3>
+                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-600 text-white font-bold text-[10px]">
+                              Final Assessment Unlocked
+                            </span>
+                          </div>
+                          <p className="text-xs text-emerald-900 leading-relaxed max-w-xl">
+                            All required modules are completed. Launch your proctored final assessment to earn your official institutional certificate.
+                          </p>
+                        </div>
+                        {finalAssessment && (
+                          <Link
+                            to={`/assessments/${finalAssessment.id}/preflight`}
+                            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl text-xs shadow-md flex items-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <Award className="w-4 h-4" />
+                            <span>Start Final Assessment</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </Link>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-5 bg-slate-100/80 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Lock className="w-4 h-4 text-slate-400" />
+                        <span className="text-xs font-bold text-slate-700">Final Assessment Locked</span>
+                        <span className="text-[11px] text-slate-500">• Complete all required modules above to unlock</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -245,8 +342,8 @@ export const CourseDetail: React.FC = () => {
                     to={`/learn/${course.slug}`}
                     className="w-full py-3.5 px-4 rounded-xl bg-primary-900 hover:bg-primary-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2"
                   >
-                    <PlayCircle className="w-4 h-4 text-accent-400" />
-                    Resume Learning ({progressInfo.progress_percent}%)
+                    <BookOpen className="w-4 h-4 text-accent-400" />
+                    <span>Open Course Modules</span>
                     <ArrowRight className="w-4 h-4" />
                   </Link>
                 ) : (

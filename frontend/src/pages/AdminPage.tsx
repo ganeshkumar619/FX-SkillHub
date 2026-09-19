@@ -32,7 +32,8 @@ import {
   Phone,
   Building,
   Key,
-  Clock
+  Clock,
+  Send
 } from 'lucide-react';
 
 import { AICourseGeneratorModal } from '../components/AICourseGeneratorModal';
@@ -308,17 +309,22 @@ export const AdminPage: React.FC = () => {
     setAddFacultyError(null);
 
     const email = addFacultyForm.email.trim().toLowerCase();
-    if (!email.endsWith('@francisxavier.ac.in') && !email.endsWith('@fxec.ac.in')) {
-      setAddFacultyError('Faculty email must use institutional domain: @francisxavier.ac.in');
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!email || !emailRegex.test(email)) {
+      setAddFacultyError('Please enter a valid email address.');
       return;
     }
 
     try {
       setAddFacultyLoading(true);
-      await apiClient.post('/admin/faculty/', {
-        ...addFacultyForm,
+      const res = await apiClient.post('/admin/faculty/', {
+        first_name: addFacultyForm.first_name,
+        last_name: addFacultyForm.last_name,
         email,
-        department: addFacultyForm.department ? parseInt(addFacultyForm.department) : null
+        faculty_id: addFacultyForm.faculty_id,
+        department: addFacultyForm.department ? parseInt(addFacultyForm.department) : null,
+        phone: addFacultyForm.phone,
+        is_active: addFacultyForm.is_active
       });
       setIsAddFacultyModalOpen(false);
       setAddFacultyForm({
@@ -331,7 +337,11 @@ export const AdminPage: React.FC = () => {
         password: '',
         is_active: true
       });
-      setActionMessage('New Faculty account successfully created and provisioned.');
+      if (res.data?.email_sent === false) {
+        setActionMessage('Faculty account created, but the invitation email could not be sent.');
+      } else {
+        setActionMessage(res.data?.message || 'New Faculty account created and invitation email dispatched.');
+      }
       fetchFaculty();
       fetchOverview();
     } catch (err: any) {
@@ -351,6 +361,20 @@ export const AdminPage: React.FC = () => {
       }
     } finally {
       setAddFacultyLoading(false);
+    }
+  };
+
+  // Resend Faculty Invitation Email
+  const handleResendInvitation = async (facultyId: number, _name: string, email: string) => {
+    try {
+      setActionInProgressId(facultyId);
+      const res = await apiClient.post(`/admin/faculty/${facultyId}/resend-invitation/`);
+      setActionMessage(res.data?.message || `Invitation email resent to ${email}.`);
+      fetchFaculty();
+    } catch (err: any) {
+      alert(err?.response?.data?.error || `Failed to resend invitation email to ${email}.`);
+    } finally {
+      setActionInProgressId(null);
     }
   };
 
@@ -1020,7 +1044,7 @@ export const AdminPage: React.FC = () => {
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                       <th className="py-3 px-4">Faculty Member</th>
-                      <th className="py-3 px-4">Institutional Email</th>
+                      <th className="py-3 px-4">Official Faculty Email</th>
                       <th className="py-3 px-4">Faculty ID</th>
                       <th className="py-3 px-4">Department</th>
                       <th className="py-3 px-4">Phone</th>
@@ -1050,7 +1074,7 @@ export const AdminPage: React.FC = () => {
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-1.5 font-mono text-slate-600">
                               <span>{f.email}</span>
-                              <span title="Institutional Domain Verified">
+                              <span title="Official Faculty Account">
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                               </span>
                             </div>
@@ -1088,6 +1112,15 @@ export const AdminPage: React.FC = () => {
 
                           <td className="py-3 px-4 text-right">
                             <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={() => handleResendInvitation(f.id, fullName, f.email)}
+                                disabled={actionInProgressId === f.id}
+                                className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                                title="Resend Account Activation Invitation"
+                              >
+                                <Send className="w-4 h-4" />
+                              </button>
+
                               <button
                                 onClick={() => handleOpenEditFaculty(f)}
                                 className="p-1.5 text-slate-600 hover:text-primary-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
@@ -2340,7 +2373,7 @@ export const AdminPage: React.FC = () => {
                   Institutional Provisioning
                 </span>
                 <h3 className="text-lg font-black text-slate-900 mt-1">Add New Faculty Member</h3>
-                <p className="text-xs text-slate-500">Official @francisxavier.ac.in credentials required.</p>
+                <p className="text-xs text-slate-500">Official faculty credentials.</p>
               </div>
               <button
                 type="button"
@@ -2385,7 +2418,7 @@ export const AdminPage: React.FC = () => {
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  Official Faculty Email * <span className="text-primary-900 font-normal">(@francisxavier.ac.in)</span>
+                  Official Faculty Email *
                 </label>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -2394,13 +2427,10 @@ export const AdminPage: React.FC = () => {
                     required
                     value={addFacultyForm.email}
                     onChange={(e) => setAddFacultyForm({ ...addFacultyForm, email: e.target.value })}
-                    placeholder="facultyname@francisxavier.ac.in"
+                    placeholder="Enter faculty email address"
                     className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 focus:outline-hidden focus:border-primary-900 font-mono text-xs"
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Institutional security rule: strictly @francisxavier.ac.in required.
-                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2457,7 +2487,7 @@ export const AdminPage: React.FC = () => {
                       type="password"
                       value={addFacultyForm.password}
                       onChange={(e) => setAddFacultyForm({ ...addFacultyForm, password: e.target.value })}
-                      placeholder="Default: Faculty@FXEC2026!"
+                      placeholder="Leave blank for institutional default"
                       className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 focus:outline-hidden focus:border-primary-900"
                     />
                   </div>

@@ -81,6 +81,25 @@ class TestGoogleOAuthFlow:
         existing_student.refresh_from_db()
         assert existing_student.google_id == 'google-uid-99999'
 
+    @patch('authentication.google_auth_service.GoogleAuthService.exchange_code_for_user_info')
+    def test_google_callback_duplicate_request_idempotency(self, mock_exchange):
+        mock_exchange.return_value = {
+            'email': 'duplicate.test@fxec.ac.in',
+            'sub': 'google-uid-dup-111',
+            'given_name': 'Duplicate',
+            'family_name': 'Tester',
+            'email_verified': True
+        }
+        url = reverse('google_auth_callback')
+        res1 = self.client.post(url, {'code': 'dup_auth_code_123'})
+        assert res1.status_code == 200
+        assert 'token' in res1.json()
+
+        res2 = self.client.post(url, {'code': 'dup_auth_code_123'})
+        assert res2.status_code == 200
+        assert res2.json()['user']['email'] == 'duplicate.test@fxec.ac.in'
+
+
 
 @pytest.mark.django_db
 class TestAssessmentSecurityEngine:

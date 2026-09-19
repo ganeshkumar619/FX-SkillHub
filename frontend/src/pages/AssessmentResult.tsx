@@ -583,56 +583,92 @@ export const AssessmentResult: React.FC = () => {
                   {q.question_text}
                 </div>
 
-                {/* Options Comparison */}
-                <div className="space-y-2 pt-1">
-                  {q.options.map((opt) => {
-                    const isSelected = opt.is_selected;
-                    const isCorrect = opt.is_correct;
-
-                    let optStyle = "bg-white border-slate-200 text-slate-700";
-                    let badge = null;
-
-                    if (isSelected && isCorrect) {
-                      optStyle = "bg-emerald-50 border-emerald-500 text-emerald-900 font-semibold";
-                      badge = (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600 text-white flex items-center gap-1">
-                          <Check className="w-3 h-3" /> Your Correct Choice
+                {/* Coding or Options Comparison */}
+                {q.question_type === 'CODING' ? (
+                  <div className="space-y-3 pt-1">
+                    <div className="flex items-center justify-between p-3.5 bg-slate-900 text-slate-100 rounded-xl text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800 text-accent-300 font-mono">
+                          {q.code_language?.toUpperCase() || 'SOLUTION'}
                         </span>
-                      );
-                    } else if (isSelected && !isCorrect) {
-                      optStyle = "bg-rose-50 border-rose-500 text-rose-950 font-semibold";
-                      badge = (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600 text-white flex items-center gap-1">
-                          <XCircle className="w-3 h-3" /> Your Incorrect Choice
+                        <span className="font-semibold text-slate-300">
+                          {q.test_cases_passed ?? 0} of {q.total_test_cases ?? 6} Test Cases Passed
                         </span>
-                      );
-                    } else if (!isSelected && isCorrect) {
-                      optStyle = "bg-emerald-50/70 border-emerald-300 text-emerald-900 font-medium";
-                      badge = (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 flex items-center gap-1">
-                          <Check className="w-3 h-3" /> Correct Answer
-                        </span>
-                      );
-                    }
-
-                    return (
-                      <div
-                        key={opt.id}
-                        className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${optStyle}`}
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <span className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 text-[10px] ${
-                            isSelected ? 'bg-primary-900 text-white border-primary-900' : 'border-slate-300'
-                          }`}>
-                            {opt.order}
-                          </span>
-                          <span>{opt.text}</span>
-                        </div>
-                        {badge}
                       </div>
-                    );
-                  })}
-                </div>
+                      <span className={`text-xs font-bold px-2.5 py-0.5 rounded ${
+                        q.is_correct ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                      }`}>
+                        {q.is_correct ? 'ALL TEST CASES PASSED' : 'PARTIAL / FAILED'}
+                      </span>
+                    </div>
+
+                    {q.submitted_code ? (
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                          Submitted Code:
+                        </span>
+                        <pre className="bg-slate-950 text-slate-200 p-4 rounded-xl border border-slate-800 text-xs font-mono overflow-x-auto leading-relaxed">
+                          {q.submitted_code}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
+                        No code submitted for this question.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* Options Comparison */
+                  <div className="space-y-2 pt-1">
+                    {q.options.map((opt) => {
+                      const isSelected = opt.is_selected;
+                      const isCorrect = opt.is_correct;
+
+                      let optStyle = "bg-white border-slate-200 text-slate-700";
+                      let badge = null;
+
+                      if (isSelected && isCorrect) {
+                        optStyle = "bg-emerald-50 border-emerald-500 text-emerald-900 font-semibold";
+                        badge = (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-600 text-white flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Your Correct Choice
+                          </span>
+                        );
+                      } else if (isSelected && !isCorrect) {
+                        optStyle = "bg-rose-50 border-rose-500 text-rose-950 font-semibold";
+                        badge = (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600 text-white flex items-center gap-1">
+                            <XCircle className="w-3 h-3" /> Your Incorrect Choice
+                          </span>
+                        );
+                      } else if (!isSelected && isCorrect) {
+                        optStyle = "bg-emerald-50/70 border-emerald-300 text-emerald-900 font-medium";
+                        badge = (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Correct Answer
+                          </span>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={opt.id}
+                          className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${optStyle}`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 text-[10px] ${
+                              isSelected ? 'bg-primary-900 text-white border-primary-900' : 'border-slate-300'
+                            }`}>
+                              {opt.order}
+                            </span>
+                            <span>{opt.text}</span>
+                          </div>
+                          {badge}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* Institutional Pedagogical Explanation */}
                 {q.explanation && (

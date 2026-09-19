@@ -104,3 +104,27 @@ class ApprovedStudentDirectory(models.Model):
     def __str__(self):
         return f"{self.register_number} - {self.email} ({self.full_name or 'Student'})"
 
+
+class FacultyInvitation(models.Model):
+    """
+    Cryptographically secure, time-limited, single-use invitation for newly provisioned faculty.
+    The plaintext token is NEVER persisted in the database; only its SHA-256 digest is stored.
+    """
+    faculty = models.ForeignKey(User, on_delete=models.CASCADE, related_name='invitations')
+    email = models.EmailField(db_index=True, help_text="Exact faculty email to which invitation was dispatched")
+    token_hash = models.CharField(max_length=64, db_index=True, help_text="SHA-256 hash of single-use invitation token")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    is_used = models.BooleanField(default=False, db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def is_expired(self):
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+
+    def __str__(self):
+        return f"Invitation for {self.email} (Expired: {self.is_expired()}, Used: {self.is_used})"
+

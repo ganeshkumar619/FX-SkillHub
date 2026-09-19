@@ -151,7 +151,7 @@ class CourseListView(generics.ListAPIView):
         if level and level != 'ALL':
             qs = qs.filter(level=level)
         if course_type and course_type != 'ALL':
-            qs = qs.filter(course_types__contains=course_type)
+            qs = qs.filter(course_types__icontains=course_type)
         if source_type and source_type != 'ALL':
             qs = qs.filter(source_type=source_type)
         if search:

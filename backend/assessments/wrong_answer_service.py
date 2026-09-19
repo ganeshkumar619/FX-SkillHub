@@ -123,32 +123,41 @@ class WrongAnswerReviewService:
             selected_ids = [opt.id for opt in selected_opts]
             correct_ids = [opt.id for opt in correct_opts]
 
-            is_answered = len(selected_opts) > 0
-            if is_answered:
-                answered_count += 1
-
-            # Determine correctness using database Option IDs as source of truth
-            if not is_answered or not correct_ids:
-                is_correct = False
-            elif q.question_type == 'SINGLE_CHOICE':
-                is_correct = (len(selected_ids) == 1 and len(correct_ids) == 1 and selected_ids[0] == correct_ids[0])
+            if q.question_type == 'CODING':
+                is_answered = bool(ans and ans.submitted_code.strip())
+                if is_answered:
+                    answered_count += 1
+                is_correct = bool(ans and ans.is_correct)
+                student_answer_texts = [f"Submitted {ans.code_language.upper()}: {ans.test_cases_passed}/{ans.total_test_cases} test cases passed"] if is_answered else []
+                correct_answer_texts = ["All 6 test cases passed (2 Sample + 4 Hidden)"]
+                options_data = []
             else:
-                is_correct = (set(selected_ids) == set(correct_ids))
+                is_answered = len(selected_opts) > 0
+                if is_answered:
+                    answered_count += 1
 
-            student_answer_texts = [opt.text for opt in selected_opts]
-            correct_answer_texts = [opt.text for opt in correct_opts]
+                # Determine correctness using database Option IDs as source of truth
+                if not is_answered or not correct_ids:
+                    is_correct = False
+                elif q.question_type in ('SINGLE_CHOICE', 'MCQ_SINGLE', 'TRUE_FALSE'):
+                    is_correct = (len(selected_ids) == 1 and len(correct_ids) == 1 and selected_ids[0] == correct_ids[0])
+                else:
+                    is_correct = (set(selected_ids) == set(correct_ids))
 
-            # Format all options for UI display
-            options_data = [
-                {
-                    'id': opt.id,
-                    'text': opt.text,
-                    'is_correct': opt.is_correct,
-                    'is_selected': opt.id in selected_ids,
-                    'order': opt.order
-                }
-                for opt in q.options.all().order_by('order')
-            ]
+                student_answer_texts = [opt.text for opt in selected_opts]
+                correct_answer_texts = [opt.text for opt in correct_opts]
+
+                # Format all options for UI display
+                options_data = [
+                    {
+                        'id': opt.id,
+                        'text': opt.text,
+                        'is_correct': opt.is_correct,
+                        'is_selected': opt.id in selected_ids,
+                        'order': opt.order
+                    }
+                    for opt in q.options.all().order_by('order')
+                ]
 
             topic_label = (q.topic_tag or 'General Engineering').replace('_', ' ').replace('-', ' ').title()
 
@@ -158,19 +167,32 @@ class WrongAnswerReviewService:
                 topic_tag = q.topic_tag or 'general'
                 topic_errors[topic_tag] = topic_errors.get(topic_tag, 0) + 1
 
-                ai_diagnosis = cls.generate_ai_mistake_diagnosis(
-                    question=q,
-                    student_answers=student_answer_texts,
-                    correct_answers=correct_answer_texts,
-                    topic_title=topic_label
-                )
+                if q.question_type == 'CODING':
+                    passed_tc = ans.test_cases_passed if ans else 0
+                    total_tc = ans.total_test_cases if ans else 6
+                    lang_label = ans.code_language.upper() if (ans and ans.code_language) else 'solution'
+                    ai_diagnosis = {
+                        'why_incorrect': f"The submitted {lang_label} code passed {passed_tc} of {total_tc} test cases. Review boundary conditions, input parsing, and edge cases.",
+                        'why_correct': "A fully correct solution handles all sample and hidden constraints within the time limit.",
+                        'simple_explanation': f"In {topic_label}, ensure the algorithm handles 0, negative values, and maximum array constraints efficiently.",
+                        'small_example': q.reference_solution[:150] + "..." if q.reference_solution else "# Ensure correct input parsing and output format",
+                        'recommended_topic': topic_label
+                    }
+                else:
+                    ai_diagnosis = cls.generate_ai_mistake_diagnosis(
+                        question=q,
+                        student_answers=student_answer_texts,
+                        correct_answers=correct_answer_texts,
+                        topic_title=topic_label
+                    )
             else:
                 correct_count += 1
 
-            detailed_reviews.append({
+            review_item = {
                 'question_id': q.id,
                 'order': idx,
                 'question_text': q.text,
+                'question_type': q.question_type,
                 'topic_tag': q.topic_tag or 'general',
                 'topic_label': topic_label,
                 'difficulty': q.difficulty,
@@ -186,7 +208,15 @@ class WrongAnswerReviewService:
                 'correct_answers': correct_answer_texts,
                 'explanation': q.explanation,
                 'ai_diagnosis': ai_diagnosis
-            })
+            }
+            if q.question_type == 'CODING':
+                review_item['submitted_code'] = ans.submitted_code if ans else ''
+                review_item['code_language'] = ans.code_language if ans else q.programming_language
+                review_item['test_cases_passed'] = ans.test_cases_passed if ans else 0
+                review_item['total_test_cases'] = ans.total_test_cases if ans else 6
+                review_item['code_execution_details'] = ans.code_execution_details if ans else {}
+
+            detailed_reviews.append(review_item)
 
         # 3. Topic Error Analysis & Direct Educational Recommendations
         # Map each weak topic to an existing database module, real YouTube video, and study notes

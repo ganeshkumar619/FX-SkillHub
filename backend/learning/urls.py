@@ -20,6 +20,7 @@ urlpatterns = [
     path('course-progress/<slug:course_slug>/', CourseProgressDetailView.as_view(), name='course_progress'),
     path('progress/complete/', CompleteModuleView.as_view(), name='complete_module'),
     path('modules/<int:module_id>/complete/', CompleteModuleView.as_view(), name='complete_module_by_id'),
+    path('modules/<int:module_id>/progress/', CompleteModuleView.as_view(), name='module_progress_by_id'),
     path('resources/<int:resource_id>/complete/', GenericResourceCompleteView.as_view(), name='resource_complete'),
     path('video/progress/', VideoProgressView.as_view(), name='video_progress'),
     path('video/start/', VideoStartView.as_view(), name='video_start_body'),

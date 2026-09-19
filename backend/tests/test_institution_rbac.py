@@ -145,27 +145,49 @@ class TestInstitutionRBACAndAuthentication:
         assert res_skills.status_code == 200
 
     # =========================================================================
-    # Scenario 4: Faculty with external email cannot be created (HTTP 400)
+    # Scenario 4: Faculty can be created with any valid email domain
     # =========================================================================
-    def test_04_faculty_with_external_email_rejected(self):
+    def test_04_faculty_can_be_created_with_any_valid_email_domain(self):
         self.client.force_authenticate(user=self.admin)
         url = '/api/admin/faculty/'
 
-        for bad_email in [
-            'faculty@gmail.com',
-            'faculty@yahoo.com',
-            'faculty@outlook.com',
-            'faculty@protonmail.com',
-            'faculty@randomdomain.org'
-        ]:
+        # Test valid email domains are accepted (Gmail, Yahoo, Outlook, francisxavier.ac.in, etc.)
+        valid_emails = [
+            ('faculty.gmail@gmail.com', 'FX-GML-01'),
+            ('faculty.yahoo@yahoo.com', 'FX-YAH-02'),
+            ('faculty.outlook@outlook.com', 'FX-OUT-03'),
+            ('faculty.inst@francisxavier.ac.in', 'FX-INS-04'),
+            ('faculty.custom@techcorp.edu', 'FX-CUS-05')
+        ]
+        for email, fac_id in valid_emails:
             payload = {
-                'first_name': 'Bad',
-                'email': bad_email,
-                'faculty_id': f'FX-{bad_email[:4]}'
+                'first_name': 'Prof',
+                'last_name': 'Test',
+                'email': email,
+                'faculty_id': fac_id,
+                'department': self.dept_cse.id,
+                'password': 'SecureFaculty123!'
             }
             res = self.client.post(url, payload, format='json')
-            assert res.status_code == 400
-            assert 'francisxavier.ac.in' in str(res.data)
+            assert res.status_code == 201, f"Failed for {email}: {res.data}"
+            assert res.data['faculty']['email'] == email
+
+        # Test invalid email formats are rejected
+        invalid_emails = [
+            'not-an-email',
+            '@missinguser.com',
+            'user@nodomain',
+            'plainaddress',
+            ''
+        ]
+        for bad_email in invalid_emails:
+            payload = {
+                'first_name': 'Invalid',
+                'email': bad_email,
+                'faculty_id': f'FX-INV-{len(bad_email)}'
+            }
+            res = self.client.post(url, payload, format='json')
+            assert res.status_code == 400, f"Should have rejected {bad_email}"
 
     # =========================================================================
     # Scenario 5: Student with @francisxavier.ac.in can register and login
@@ -396,3 +418,124 @@ class TestInstitutionRBACAndAuthentication:
         # Draft and Pending courses are NOT visible to students
         assert draft_course.id not in course_ids
         assert pending_course.id not in course_ids
+
+    # =========================================================================
+    # Scenario 13: Faculty Exact-Email Authentication & Authoritative RBAC Flow
+    # =========================================================================
+    def test_13_faculty_exact_email_authentication_and_rbac_flow(self):
+        login_url = reverse('login')
+        create_fac_url = '/api/admin/faculty/'
+
+        # Authenticate as Admin to provision faculty
+        self.client.force_authenticate(user=self.admin)
+
+        # 1. Admin creates faculty@gmail.com
+        res_create_gmail = self.client.post(create_fac_url, {
+            'first_name': 'Senthil',
+            'last_name': 'Kumar',
+            'email': 'faculty@gmail.com',
+            'faculty_id': 'FX-FAC-GMAIL',
+            'department': self.dept_cse.id,
+            'password': 'SecureFaculty123!'
+        }, format='json')
+        assert res_create_gmail.status_code == 201, res_create_gmail.data
+        assert res_create_gmail.data['faculty']['email'] == 'faculty@gmail.com'
+        assert res_create_gmail.data['faculty']['role'] == 'FACULTY'
+
+        # Switch to unauthenticated client for login attempts
+        self.client.force_authenticate(user=None)
+
+        # Case 1: faculty@gmail.com logs in with exact email + password -> PASS
+        res_login_gmail = self.client.post(login_url, {
+            'username': 'faculty@gmail.com',
+            'password': 'SecureFaculty123!',
+            'role': 'FACULTY'
+        }, format='json')
+        assert res_login_gmail.status_code == 200, res_login_gmail.data
+        assert res_login_gmail.data['user']['email'] == 'faculty@gmail.com'
+        assert res_login_gmail.data['user']['role'] == 'FACULTY'
+
+        # Case 2: another@gmail.com cannot login as that faculty -> PASS
+        res_login_another = self.client.post(login_url, {
+            'username': 'another@gmail.com',
+            'password': 'SecureFaculty123!',
+            'role': 'FACULTY'
+        }, format='json')
+        assert res_login_another.status_code == 400
+
+        # Case 3: faculty@outlook.com cannot login as faculty@gmail.com -> PASS
+        res_login_wrong_domain = self.client.post(login_url, {
+            'username': 'faculty@outlook.com',
+            'password': 'SecureFaculty123!',
+            'role': 'FACULTY'
+        }, format='json')
+        assert res_login_wrong_domain.status_code == 400
+
+        # 4. Admin creates faculty@outlook.com
+        self.client.force_authenticate(user=self.admin)
+        res_create_outlook = self.client.post(create_fac_url, {
+            'first_name': 'Ramesh',
+            'last_name': 'Babu',
+            'email': 'faculty@outlook.com',
+            'faculty_id': 'FX-FAC-OUTLOOK',
+            'department': self.dept_cse.id,
+            'password': 'OutlookPass456!'
+        }, format='json')
+        assert res_create_outlook.status_code == 201
+
+        # Case 4: faculty@outlook.com can login -> PASS
+        self.client.force_authenticate(user=None)
+        res_login_outlook = self.client.post(login_url, {
+            'username': 'faculty@outlook.com',
+            'password': 'OutlookPass456!',
+            'role': 'FACULTY'
+        }, format='json')
+        assert res_login_outlook.status_code == 200
+        assert res_login_outlook.data['user']['email'] == 'faculty@outlook.com'
+
+        # Case 5: Invalid email format -> Faculty creation rejected -> PASS
+        self.client.force_authenticate(user=self.admin)
+        for invalid_email in ['notanemail', '@missinguser.com', 'user@nodomain', '']:
+            res_invalid = self.client.post(create_fac_url, {
+                'first_name': 'Bad',
+                'email': invalid_email,
+                'faculty_id': f'FX-INV-{len(invalid_email)}'
+            }, format='json')
+            assert res_invalid.status_code == 400
+
+        # Case 6: Student login remains unchanged -> PASS
+        self.client.force_authenticate(user=None)
+        res_student_login = self.client.post(login_url, {
+            'username': '22cs101@francisxavier.ac.in',
+            'password': 'StudentPassword123!',
+            'role': 'STUDENT'
+        }, format='json')
+        assert res_student_login.status_code == 200
+        assert res_student_login.data['user']['role'] == 'STUDENT'
+
+        # Case 7: Faculty role remains FACULTY -> PASS
+        gmail_user = User.objects.get(email='faculty@gmail.com')
+        assert gmail_user.role == 'FACULTY'
+        assert gmail_user.is_faculty() is True
+
+        # Case 8: Direct API attempt with another email is rejected by backend -> PASS
+        res_direct_api = self.client.post(login_url, {
+            'username': 'imposter.faculty@gmail.com',
+            'password': 'SecureFaculty123!'
+        }, format='json')
+        assert res_direct_api.status_code == 400
+
+        # Case 9: Frontend manipulation of email/role cannot bypass backend authorization -> PASS
+        self.client.force_authenticate(user=self.student)
+        res_tamper = self.client.patch('/api/auth/me/', {
+            'role': 'FACULTY',
+            'email': 'faculty@gmail.com'
+        }, format='json')
+        assert res_tamper.status_code == 200
+        self.student.refresh_from_db()
+        assert self.student.role == 'STUDENT'
+        assert self.student.email == '22cs101@francisxavier.ac.in'
+
+        # Student token still cannot access faculty protected APIs (HTTP 403)
+        res_fac_api = self.client.get('/api/catalogue/faculty/my-courses/')
+        assert res_fac_api.status_code == 403

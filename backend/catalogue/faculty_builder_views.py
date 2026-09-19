@@ -1097,6 +1097,9 @@ class FacultyCourseFinalAssessmentView(APIView):
                 assessment.is_published = bool(data['is_published'])
             assessment.save()
 
+        # Ensure any unattached coding questions for this course are linked to this assessment
+        Question.objects.filter(course=course, question_type='CODING', assessment__isnull=True).update(assessment=assessment)
+
         return Response({
             'exists': True,
             'assessment': AssessmentAdminSerializer(assessment).data
@@ -1174,8 +1177,71 @@ class FacultyCourseAssessmentQuestionCreateOrUpdateView(APIView):
 
         # Single manual question creation
         text = data.get('text', '').strip()
-        if not text:
+        if not text and not data.get('problem_statement') and not data.get('title'):
             return Response({'error': 'Question text is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Branch for Practical Coding Question
+        if data.get('question_type') == 'CODING':
+            from assessments.code_execution_service import CodeExecutionService
+            from assessments.views import normalize_language_name
+
+            title = data.get('title') or text
+            problem_statement = data.get('problem_statement') or text
+            prog_lang = normalize_language_name(data.get('programming_language') or course.get_programming_language() or 'python')
+            samples = data.get('sample_test_cases') or []
+            hiddens = data.get('hidden_test_cases') or []
+            ref_sol = data.get('reference_solution', '')
+
+            if len(samples) != 2:
+                return Response({'error': f'Exactly 2 sample test cases required, found {len(samples)}.'}, status=status.HTTP_400_BAD_REQUEST)
+            if len(hiddens) != 4:
+                return Response({'error': f'Exactly 4 hidden test cases required, found {len(hiddens)}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if ref_sol and ref_sol.strip():
+                is_valid, val_err = CodeExecutionService.validate_reference_solution(
+                    language=prog_lang,
+                    reference_solution=ref_sol,
+                    sample_test_cases=samples,
+                    hidden_test_cases=hiddens
+                )
+                if not is_valid:
+                    return Response({'error': f'Reference solution validation failed: {val_err}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            with transaction.atomic():
+                q_order = assessment.questions.count() + 1
+                q_obj = Question.objects.create(
+                    assessment=assessment,
+                    course=course,
+                    text=f"{title}\n\n{problem_statement}",
+                    title=title,
+                    problem_statement=problem_statement,
+                    programming_language=prog_lang,
+                    topic_tag=(data.get('topic_tag') or 'coding')[:64],
+                    question_type='CODING',
+                    difficulty=data.get('difficulty', 'EASY'),
+                    marks=int(data.get('marks', 10)),
+                    input_format=data.get('input_format', ''),
+                    output_format=data.get('output_format', ''),
+                    constraints=data.get('constraints', ''),
+                    sample_test_cases=samples,
+                    hidden_test_cases=hiddens,
+                    reference_solution=ref_sol,
+                    explanation=data.get('explanation', '').strip(),
+                    order=q_order,
+                    is_bank_question=True,
+                    approval_status=data.get('approval_status', 'APPROVED'),
+                    status='ACTIVE'
+                )
+
+                if prog_lang and not course.programming_language:
+                    course.programming_language = prog_lang
+                    course.save(update_fields=['programming_language'])
+
+            return Response({
+                'message': 'Coding question created successfully.',
+                'question': QuestionAdminSerializer(q_obj).data,
+                'assessment': AssessmentAdminSerializer(assessment).data
+            }, status=status.HTTP_201_CREATED)
 
         options = data.get('options', [])
         if not options or len(options) < 2:
@@ -1236,6 +1302,36 @@ class FacultyCourseAssessmentQuestionCreateOrUpdateView(APIView):
             question.marks = int(data['marks'])
         if 'explanation' in data:
             question.explanation = data['explanation'].strip()
+
+        # Handle coding specific fields
+        if question.question_type == 'CODING':
+            from assessments.views import normalize_language_name
+            if 'title' in data:
+                question.title = data['title'].strip()
+            if 'problem_statement' in data:
+                question.problem_statement = data['problem_statement'].strip()
+            if 'programming_language' in data:
+                question.programming_language = normalize_language_name(data['programming_language'])
+                if not course.programming_language:
+                    course.programming_language = question.programming_language
+                    course.save(update_fields=['programming_language'])
+            if not question.course:
+                question.course = course
+            if 'sample_test_cases' in data:
+                question.sample_test_cases = data['sample_test_cases']
+            if 'hidden_test_cases' in data:
+                question.hidden_test_cases = data['hidden_test_cases']
+            if 'reference_solution' in data:
+                question.reference_solution = data['reference_solution']
+            if 'input_format' in data:
+                question.input_format = data['input_format']
+            if 'output_format' in data:
+                question.output_format = data['output_format']
+            if 'constraints' in data:
+                question.constraints = data['constraints']
+            if 'approval_status' in data:
+                question.approval_status = data['approval_status']
+
         question.save()
 
         if 'options' in data and isinstance(data['options'], list) and len(data['options']) >= 2:

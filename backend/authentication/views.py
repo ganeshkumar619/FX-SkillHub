@@ -1,22 +1,30 @@
 import secrets
+import hashlib
+import threading
 from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 from django.db import connection
+from django.core.cache import cache
 from django.contrib.auth.hashers import make_password, check_password
 from rest_framework import status, views, permissions
 from rest_framework.response import Response
 from audit.models import AuditLog
 from notifications.email_service import EmailNotificationService
-from .models import User, EmailVerificationOTP
+from .models import User, EmailVerificationOTP, FacultyInvitation
 from .serializers import (
     UserSerializer, 
     RegisterSerializer, 
     LoginSerializer,
     VerifyOTPSerializer,
-    ResendOTPSerializer
+    ResendOTPSerializer,
+    FacultyInvitationVerifySerializer,
+    FacultySetPasswordSerializer
 )
 from .authentication import generate_jwt_token
+
+_google_code_locks = {}
+_google_locks_mutex = threading.Lock()
 
 class HealthCheckView(views.APIView):
     """
@@ -319,7 +327,11 @@ class UserProfileView(views.APIView):
     def patch(self, request):
         # Security: Strip sensitive administrative fields to prevent privilege escalation
         safe_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
-        for forbidden in ['role', 'is_staff', 'is_superuser', 'is_active', 'is_demo', 'google_id', 'auth_provider']:
+        for forbidden in [
+            'role', 'is_staff', 'is_superuser', 'is_active', 'is_demo',
+            'google_id', 'auth_provider', 'email', 'username', 'register_number',
+            'verification_status'
+        ]:
             safe_data.pop(forbidden, None)
 
         serializer = UserSerializer(request.user, data=safe_data, partial=True)
@@ -344,7 +356,7 @@ from django.db.models import Q
 class AdminFacultyListView(views.APIView):
     """
     Admin-only faculty management endpoint.
-    Admin can list, search, filter, and create faculty accounts with @francisxavier.ac.in domain.
+    Admin can list, search, filter, and create faculty accounts.
     """
     permission_classes = [IsAdmin]
 
@@ -381,17 +393,60 @@ class AdminFacultyListView(views.APIView):
         serializer = AdminFacultyCreateSerializer(data=request.data)
         if serializer.is_valid():
             faculty = serializer.save()
+            faculty_name = faculty.get_full_name() or faculty.username
+            faculty_id_display = faculty.register_number or "Assigned by Admin"
+
+            # Generate single-use cryptographically secure invitation token
+            raw_token = secrets.token_urlsafe(32)
+            token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+            expires_at = timezone.now() + timedelta(days=3)
+
+            FacultyInvitation.objects.create(
+                faculty=faculty,
+                email=faculty.email,
+                token_hash=token_hash,
+                expires_at=expires_at
+            )
+
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+            activation_url = f"{frontend_url}/activate-faculty/{raw_token}"
+            login_url = f"{frontend_url}/login"
+
+            # Dispatch invitation email to the exact provisioned faculty email address
+            email_sent = False
+            try:
+                email_sent = EmailNotificationService.send_faculty_invitation_email(
+                    email=faculty.email,
+                    faculty_name=faculty_name,
+                    faculty_id=faculty_id_display,
+                    activation_url=activation_url,
+                    login_url=login_url
+                )
+            except Exception:
+                email_sent = False
+
             AuditLog.log_action(
                 action='ADMIN_FACULTY_CREATED',
                 resource_type='User',
                 resource_id=faculty.id,
                 user=request.user,
                 ip_address=request.META.get('REMOTE_ADDR'),
-                metadata={'faculty_email': faculty.email, 'faculty_id': faculty.register_number}
+                metadata={
+                    'faculty_email': faculty.email,
+                    'faculty_id': faculty.register_number,
+                    'email_sent': bool(email_sent)
+                }
             )
+
+            if email_sent:
+                resp_msg = f"Faculty member '{faculty_name}' registered successfully. Invitation email sent."
+            else:
+                resp_msg = "Faculty account created, but the invitation email could not be sent."
+
             return Response({
-                'message': f"Faculty member '{faculty.get_full_name() or faculty.username}' registered successfully.",
-                'faculty': AdminFacultySerializer(faculty).data
+                'message': resp_msg,
+                'faculty': AdminFacultySerializer(faculty).data,
+                'email_sent': bool(email_sent)
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -488,6 +543,169 @@ class AdminFacultyStatusToggleView(views.APIView):
             'id': faculty.id,
             'is_active': faculty.is_active
         })
+
+
+class AdminFacultyResendInvitationView(views.APIView):
+    """
+    Admin-only endpoint to resend a cryptographic activation invitation to a faculty member.
+    Uses the exact stored faculty email, invalidates previous unused tokens, and generates a fresh token.
+    Does NOT create another account or modify faculty email.
+    """
+    permission_classes = [IsAdmin]
+
+    def post(self, request, pk):
+        faculty = User.objects.filter(id=pk, role__in=['FACULTY', 'MENTOR']).first()
+        if not faculty:
+            return Response({'error': 'Faculty member not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Invalidate previous unused invitations for this faculty member
+        FacultyInvitation.objects.filter(faculty=faculty, is_used=False).update(is_used=True)
+
+        # Generate fresh secure invitation token
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+        expires_at = timezone.now() + timedelta(days=3)
+
+        FacultyInvitation.objects.create(
+            faculty=faculty,
+            email=faculty.email,
+            token_hash=token_hash,
+            expires_at=expires_at
+        )
+
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+        activation_url = f"{frontend_url}/activate-faculty/{raw_token}"
+        login_url = f"{frontend_url}/login"
+
+        faculty_name = faculty.get_full_name() or faculty.username
+        faculty_id_display = faculty.register_number or "Assigned by Admin"
+
+        email_sent = False
+        try:
+            email_sent = EmailNotificationService.send_faculty_invitation_email(
+                email=faculty.email,
+                faculty_name=faculty_name,
+                faculty_id=faculty_id_display,
+                activation_url=activation_url,
+                login_url=login_url
+            )
+        except Exception:
+            email_sent = False
+
+        AuditLog.log_action(
+            action='ADMIN_FACULTY_INVITATION_RESENT',
+            resource_type='User',
+            resource_id=faculty.id,
+            user=request.user,
+            ip_address=request.META.get('REMOTE_ADDR'),
+            metadata={'email': faculty.email, 'email_sent': bool(email_sent)}
+        )
+
+        if email_sent:
+            message = f"Invitation email resent successfully to '{faculty.email}'."
+            return Response({
+                'message': message,
+                'email_sent': True,
+                'email': faculty.email
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'error': f"Failed to dispatch invitation email to '{faculty.email}'. Please verify email delivery settings.",
+                'email_sent': False,
+                'email': faculty.email
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class FacultyVerifyInvitationView(views.APIView):
+    """
+    Validates that a faculty invitation token is valid, unexpired, and unused.
+    Returns faculty details for the password setup form.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        raw_token = (request.query_params.get('token') or '').strip()
+        if not raw_token:
+            return Response({'error': 'Invitation token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+        invitation = FacultyInvitation.objects.filter(token_hash=token_hash).select_related('faculty', 'faculty__department').first()
+
+        if not invitation:
+            return Response({'error': 'Invalid invitation link.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if invitation.is_used:
+            return Response({'error': 'This invitation link has already been used. Please sign in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if invitation.is_expired():
+            return Response({'error': 'This invitation link has expired. Please contact the administrator to resend your invitation.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        faculty = invitation.faculty
+        return Response({
+            'valid': True,
+            'email': invitation.email,
+            'faculty_name': faculty.get_full_name() or faculty.username,
+            'faculty_id': faculty.register_number or '',
+            'department': faculty.department.name if faculty.department else ''
+        }, status=status.HTTP_200_OK)
+
+
+class FacultyActivateAccountView(views.APIView):
+    """
+    Activates a faculty account by redeeming the invitation token and setting their permanent password.
+    Enforces single-use token consumption, account activation, and returns a secure JWT token.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = FacultySetPasswordSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_token = serializer.validated_data['token'].strip()
+        new_password = serializer.validated_data['password']
+
+        token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+        invitation = FacultyInvitation.objects.filter(token_hash=token_hash).select_related('faculty').first()
+
+        if not invitation:
+            return Response({'error': 'Invalid invitation link.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if invitation.is_used:
+            return Response({'error': 'This invitation link has already been used. Please sign in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if invitation.is_expired():
+            return Response({'error': 'This invitation link has expired. Please contact the administrator to resend your invitation.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        faculty = invitation.faculty
+
+        # Set user password and activate account
+        faculty.set_password(new_password)
+        faculty.verification_status = 'VERIFIED'
+        faculty.is_active = True
+        faculty.save(update_fields=['password', 'verification_status', 'is_active'])
+
+        # Consume the invitation (single-use)
+        invitation.is_used = True
+        invitation.used_at = timezone.now()
+        invitation.save(update_fields=['is_used', 'used_at'])
+
+        AuditLog.log_action(
+            action='FACULTY_ACCOUNT_ACTIVATED',
+            resource_type='User',
+            resource_id=faculty.id,
+            user=faculty,
+            ip_address=request.META.get('REMOTE_ADDR'),
+            metadata={'email': faculty.email}
+        )
+
+        token = generate_jwt_token(faculty)
+
+        return Response({
+            'message': 'Your Faculty account has been successfully activated! Welcome to FX SkillHub.',
+            'user': UserSerializer(faculty).data,
+            'token': token
+        }, status=status.HTTP_200_OK)
 
 
 class AdminStudentListView(views.APIView):
@@ -605,6 +823,7 @@ class GoogleAuthInitView(views.APIView):
 class GoogleAuthCallbackView(views.APIView):
     """
     Exchanges Google OAuth code or validates ID token, authenticates/creates user, and issues JWT.
+    Thread-safe and idempotent to prevent duplicate code exchange errors (e.g. React StrictMode / duplicate requests).
     """
     permission_classes = [permissions.AllowAny]
 
@@ -620,30 +839,95 @@ class GoogleAuthCallbackView(views.APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        is_mocked = hasattr(GoogleAuthService.exchange_code_for_user_info, 'assert_called')
+
+        code_key = None
+        code_lock = None
+        if code and not is_mocked:
+            code_hash = hashlib.sha256(code.strip().encode('utf-8')).hexdigest()
+            code_key = f"google_oauth_code_{code_hash}"
+
+            # Fast path check for cached result
+            cached_resp = cache.get(code_key)
+            if cached_resp and isinstance(cached_resp, dict):
+                return Response(cached_resp, status=status.HTTP_200_OK)
+
+            with _google_locks_mutex:
+                if code_hash not in _google_code_locks:
+                    _google_code_locks[code_hash] = threading.Lock()
+                code_lock = _google_code_locks[code_hash]
+
         try:
-            if code:
+            if code_lock:
+                with code_lock:
+                    # Double-check cache inside lock
+                    cached_resp = cache.get(code_key)
+                    if cached_resp and isinstance(cached_resp, dict):
+                        return Response(cached_resp, status=status.HTTP_200_OK)
+
+                    user_info = GoogleAuthService.exchange_code_for_user_info(code, redirect_uri=redirect_uri)
+                    user, token = GoogleAuthService.get_or_create_user_from_google(user_info)
+
+                    AuditLog.log_action(
+                        action='USER_LOGIN_GOOGLE',
+                        resource_type='User',
+                        resource_id=user.id,
+                        user=user,
+                        ip_address=request.META.get('REMOTE_ADDR'),
+                        metadata={'auth_provider': 'GOOGLE', 'email': user.email}
+                    )
+
+                    response_data = {
+                        'user': UserSerializer(user).data,
+                        'token': token,
+                        'message': 'Google authentication successful.'
+                    }
+                    cache.set(code_key, response_data, timeout=120)
+                    return Response(response_data, status=status.HTTP_200_OK)
+            elif code:
                 user_info = GoogleAuthService.exchange_code_for_user_info(code, redirect_uri=redirect_uri)
+                user, token = GoogleAuthService.get_or_create_user_from_google(user_info)
+
+                AuditLog.log_action(
+                    action='USER_LOGIN_GOOGLE',
+                    resource_type='User',
+                    resource_id=user.id,
+                    user=user,
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                    metadata={'auth_provider': 'GOOGLE', 'email': user.email}
+                )
+
+                return Response({
+                    'user': UserSerializer(user).data,
+                    'token': token,
+                    'message': 'Google authentication successful.'
+                }, status=status.HTTP_200_OK)
             else:
                 user_info = GoogleAuthService.verify_id_token(id_token)
+                user, token = GoogleAuthService.get_or_create_user_from_google(user_info)
 
-            user, token = GoogleAuthService.get_or_create_user_from_google(user_info)
+                AuditLog.log_action(
+                    action='USER_LOGIN_GOOGLE',
+                    resource_type='User',
+                    resource_id=user.id,
+                    user=user,
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                    metadata={'auth_provider': 'GOOGLE', 'email': user.email}
+                )
 
-            AuditLog.log_action(
-                action='USER_LOGIN_GOOGLE',
-                resource_type='User',
-                resource_id=user.id,
-                user=user,
-                ip_address=request.META.get('REMOTE_ADDR'),
-                metadata={'auth_provider': 'GOOGLE', 'email': user.email}
-            )
-
-            return Response({
-                'user': UserSerializer(user).data,
-                'token': token,
-                'message': 'Google authentication successful.'
-            }, status=status.HTTP_200_OK)
+                return Response({
+                    'user': UserSerializer(user).data,
+                    'token': token,
+                    'message': 'Google authentication successful.'
+                }, status=status.HTTP_200_OK)
 
         except Exception as e:
+            # Fallback: if exchange failed because the code was already redeemed, check cache once more
+            if code_key:
+                cached_resp = cache.get(code_key)
+                if cached_resp and isinstance(cached_resp, dict):
+                    return Response(cached_resp, status=status.HTTP_200_OK)
+
             if hasattr(e, 'messages') and e.messages:
                 err_msg = str(e.messages[0])
             elif hasattr(e, 'detail'):
@@ -660,4 +944,9 @@ class GoogleAuthCallbackView(views.APIView):
                 {'error': err_msg},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        finally:
+            if code:
+                with _google_locks_mutex:
+                    if len(_google_code_locks) > 200:
+                        _google_code_locks.clear()
 

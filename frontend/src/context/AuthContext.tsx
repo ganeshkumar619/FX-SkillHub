@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { apiClient } from '../api/client';
 
@@ -43,16 +43,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     verifyUser();
   }, [token]);
 
-  const login = (newToken: string, newUser: User) => {
+  const login = useCallback((newToken: string, newUser: User) => {
     setToken(newToken);
     setUser(newUser);
     localStorage.setItem('fx_token', newToken);
     localStorage.setItem('fx_user', JSON.stringify(newUser));
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
-      if (token) {
+      const currentToken = localStorage.getItem('fx_token');
+      if (currentToken) {
         await apiClient.post('/auth/logout/');
       }
     } catch {
@@ -63,12 +64,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.removeItem('fx_token');
       localStorage.removeItem('fx_user');
     }
-  };
+  }, []);
 
-  const updateUser = (updated: User) => {
+  const updateUser = useCallback((updated: User) => {
     setUser(updated);
     localStorage.setItem('fx_user', JSON.stringify(updated));
-  };
+  }, []);
 
   const isStudent = user?.role === 'STUDENT';
   const isFaculty = user?.role === 'FACULTY' || user?.role === 'MENTOR';

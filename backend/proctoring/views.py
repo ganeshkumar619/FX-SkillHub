@@ -8,15 +8,26 @@ from audit.models import AuditLog
 class MentorReviewQueueView(views.APIView):
     permission_classes = [IsMentorOrAdmin]
 
+    def _is_admin(self, user):
+        """Returns True if the user has admin-level access and should see all data."""
+        return user.role == 'ADMIN' or user.is_superuser
+
     def get(self, request):
         filter_mode = request.query_params.get('filter', 'all')
-        
+
         queryset = AssessmentAttempt.objects.select_related(
             'student', 'assessment', 'assessment__course', 'risk_assessment'
         )
 
+        # --- Faculty isolation: scope to courses this faculty member owns ---
+        # Admins retain full visibility across all courses.
+        if not self._is_admin(request.user):
+            queryset = queryset.filter(assessment__course__created_by=request.user)
+
         if filter_mode == 'flagged':
-            queryset = queryset.filter(review_status__in=['PENDING_REVIEW', 'WARNING', 'INVALID']) | queryset.filter(status='TERMINATED_SECURITY_VIOLATION')
+            queryset = queryset.filter(
+                review_status__in=['PENDING_REVIEW', 'WARNING', 'INVALID']
+            ) | queryset.filter(status='TERMINATED_SECURITY_VIOLATION')
         else:
             # show all evaluated/completed/flagged/terminated attempts
             queryset = queryset.exclude(status__in=['IN_PROGRESS', 'READY'])
@@ -55,11 +66,25 @@ class MentorReviewQueueView(views.APIView):
 class AttemptEventsDetailView(views.APIView):
     permission_classes = [IsMentorOrAdmin]
 
+    def _is_admin(self, user):
+        return user.role == 'ADMIN' or user.is_superuser
+
     def get(self, request, attempt_id):
         try:
-            attempt = AssessmentAttempt.objects.select_related('student', 'assessment').get(id=attempt_id)
+            attempt = AssessmentAttempt.objects.select_related(
+                'student', 'assessment', 'assessment__course'
+            ).get(id=attempt_id)
         except AssessmentAttempt.DoesNotExist:
             return Response({'error': 'Attempt not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- Faculty isolation: verify this attempt belongs to a course the faculty owns ---
+        if not self._is_admin(request.user):
+            course = attempt.assessment.course
+            if course.created_by_id != request.user.pk:
+                return Response(
+                    {'error': 'You do not have permission to view this attempt.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         events = attempt.proctoring_events.all()
         risk = getattr(attempt, 'risk_assessment', None)
@@ -104,11 +129,25 @@ class AttemptEventsDetailView(views.APIView):
 class SubmitMentorVerdictView(views.APIView):
     permission_classes = [IsMentorOrAdmin]
 
+    def _is_admin(self, user):
+        return user.role == 'ADMIN' or user.is_superuser
+
     def post(self, request, attempt_id):
         try:
-            attempt = AssessmentAttempt.objects.get(id=attempt_id)
+            attempt = AssessmentAttempt.objects.select_related(
+                'assessment__course'
+            ).get(id=attempt_id)
         except AssessmentAttempt.DoesNotExist:
             return Response({'error': 'Attempt not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- Faculty isolation: only allow verdicts on attempts from owned courses ---
+        if not self._is_admin(request.user):
+            course = attempt.assessment.course
+            if course.created_by_id != request.user.pk:
+                return Response(
+                    {'error': 'You do not have permission to submit a verdict for this attempt.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         verdict = request.data.get('verdict')
         notes = request.data.get('notes', '')

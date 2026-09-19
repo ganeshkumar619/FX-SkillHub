@@ -174,11 +174,51 @@ class Course(SourceProvenanceModel):
     target_audience = models.CharField(max_length=255, blank=True, help_text="Target audience for course")
     learning_goal = models.TextField(blank=True, help_text="Primary engineering/career learning goal")
     blueprint = models.JSONField(default=dict, blank=True, help_text="Assessment and curriculum blueprint specification")
+    PROGRAMMING_LANGUAGE_CHOICES = (
+        ('c', 'C'),
+        ('cpp', 'C++'),
+        ('java', 'Java'),
+        ('python', 'Python'),
+    )
+
+    programming_language = models.CharField(
+        max_length=16,
+        choices=PROGRAMMING_LANGUAGE_CHOICES,
+        null=True,
+        blank=True,
+        help_text="Primary programming language if this is a programming course (c, cpp, java, python)"
+    )
     is_published = models.BooleanField(default=True, db_index=True)
     status = models.CharField(max_length=32, choices=SourceProvenanceModel.CONTENT_STATUS_CHOICES, default='PUBLISHED')
     is_demo = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def get_programming_language(self):
+        if self.programming_language:
+            return self.programming_language.lower()
+        title_lower = (self.title or '').lower()
+        slug_lower = (self.slug or '').lower()
+        skill_name = (self.skill.name if self.skill else '').lower()
+        
+        if 'c++' in title_lower or 'cpp' in slug_lower or 'c++' in skill_name:
+            return 'cpp'
+        if 'python' in title_lower or 'python' in slug_lower or 'python' in skill_name:
+            return 'python'
+        if ('java' in title_lower or 'java' in slug_lower or 'java' in skill_name) and 'javascript' not in title_lower and 'javascript' not in slug_lower:
+            return 'java'
+        if ('c programming' in title_lower or 'c language' in title_lower or 'in c' in title_lower or 'c-programming' in slug_lower or slug_lower.startswith('c-') or slug_lower.endswith('-c') or 'c programming' in skill_name or skill_name == 'c'):
+            return 'c'
+
+        # Check if the course already has coding questions in its question bank
+        try:
+            coding_q = self.question_bank.filter(question_type='CODING', approval_status='APPROVED').exclude(programming_language='').first()
+            if coding_q and coding_q.programming_language:
+                return coding_q.programming_language.lower()
+        except Exception:
+            pass
+
+        return None
 
     class Meta:
         ordering = ['-created_at']

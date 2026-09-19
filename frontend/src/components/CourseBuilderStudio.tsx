@@ -25,7 +25,11 @@ import {
   Award,
   ShieldCheck,
   Settings,
-  Wand2
+  Wand2,
+  Code2,
+  Terminal,
+  Lock,
+  PlayCircle
 } from 'lucide-react';
 
 export interface FinalAssessmentOption {
@@ -38,14 +42,24 @@ export interface FinalAssessmentOption {
 export interface FinalAssessmentQuestion {
   id?: number;
   text: string;
+  title?: string;
+  problem_statement?: string;
+  programming_language?: string;
   topic_tag?: string;
   question_type?: string;
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
   marks: number;
   explanation?: string;
-  options: FinalAssessmentOption[];
+  options?: FinalAssessmentOption[];
   order?: number;
   is_bank_question?: boolean;
+  approval_status?: string;
+  sample_test_cases?: Array<{ input: string; output: string; explanation?: string }>;
+  hidden_test_cases?: Array<{ input: string; output: string }>;
+  reference_solution?: string;
+  input_format?: string;
+  output_format?: string;
+  constraints?: string;
 }
 
 export interface FinalAssessmentData {
@@ -193,6 +207,41 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
   const [selectedAiIndices, setSelectedAiIndices] = useState<number[]>([]);
   const [savingAiQuestions, setSavingAiQuestions] = useState(false);
 
+  // Practical Coding Assessment State
+  const [programmingLanguage, setProgrammingLanguage] = useState<string>('');
+  const [codingQuestions, setCodingQuestions] = useState<any[]>([]);
+  const [loadingCodingQuestions, setLoadingCodingQuestions] = useState(false);
+  const [generatingAiCoding, setGeneratingAiCoding] = useState(false);
+  const [publishingCodingId, setPublishingCodingId] = useState<number | null>(null);
+  const [validatingCodingId, setValidatingCodingId] = useState<number | null>(null);
+  const [codingValidationResult, setCodingValidationResult] = useState<{ id: number; valid: boolean; message: string } | null>(null);
+
+  // Coding Question Modal State
+  const [isCodingModalOpen, setIsCodingModalOpen] = useState(false);
+  const [editingCodingId, setEditingCodingId] = useState<number | null>(null);
+  const [codingTitle, setCodingTitle] = useState('');
+  const [codingStatement, setCodingStatement] = useState('');
+  const [codingLang, setCodingLang] = useState('python');
+  const [codingTopic, setCodingTopic] = useState('coding');
+  const [codingMarks, setCodingMarks] = useState(10);
+  const [codingInputFormat, setCodingInputFormat] = useState('Standard Input (stdin)');
+  const [codingOutputFormat, setCodingOutputFormat] = useState('Standard Output (stdout)');
+  const [codingConstraints, setCodingConstraints] = useState('Time Limit: 4.0s | Memory: 256MB');
+  const [sampleCases, setSampleCases] = useState<Array<{ input: string; output: string }>>([
+    { input: '', output: '' },
+    { input: '', output: '' }
+  ]);
+  const [hiddenCases, setHiddenCases] = useState<Array<{ input: string; output: string }>>([
+    { input: '', output: '' },
+    { input: '', output: '' },
+    { input: '', output: '' },
+    { input: '', output: '' }
+  ]);
+  const [referenceSolution, setReferenceSolution] = useState('');
+  const [savingCodingQuestion, setSavingCodingQuestion] = useState(false);
+  const [modalValidating, setModalValidating] = useState(false);
+  const [modalValidationMsg, setModalValidationMsg] = useState<{ valid: boolean; text: string } | null>(null);
+
   // Unified Delete Confirmation Modal State
   const [confirmDeleteModal, setConfirmDeleteModal] = useState<{
     type: 'course' | 'module' | 'lesson' | 'video' | 'notes' | 'practice' | 'question';
@@ -243,6 +292,7 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
       setThumbnailUrl(c.thumbnail_url || '');
       setPrereqText(c.prerequisites_text || '');
       setObjectives(c.learning_objectives || c.outcomes || ['', '']);
+      setProgrammingLanguage(c.programming_language || '');
     } catch (err) {
       console.error('Failed to load course', err);
       showToast('error', 'Failed to load course details.');
@@ -282,7 +332,8 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
         estimated_hours: estimatedHours,
         thumbnail_url: thumbnailUrl.trim() || undefined,
         prerequisites_text: prereqText.trim(),
-        learning_objectives: objectives.filter(o => o.trim().length > 0)
+        learning_objectives: objectives.filter(o => o.trim().length > 0),
+        programming_language: programmingLanguage || null
       };
 
       if (selectedCourseId) {
@@ -729,6 +780,17 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
         setAssessmentFullscreenReq(true);
         setAssessmentFaceDetectReq(true);
       }
+
+      // Also fetch dedicated practical coding questions for this course
+      try {
+        setLoadingCodingQuestions(true);
+        const codingRes = await apiClient.get(`/assessments/courses/${courseId}/coding-questions/`);
+        setCodingQuestions(codingRes.data.questions || []);
+      } catch (cErr) {
+        console.error('Failed to load coding questions', cErr);
+      } finally {
+        setLoadingCodingQuestions(false);
+      }
     } catch (err) {
       console.error('Failed to load final assessment', err);
     } finally {
@@ -844,6 +906,217 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
 
   const handleDeleteAssessmentQuestion = (qId: number, qText: string) => {
     setConfirmDeleteModal({ type: 'question', id: qId, title: qText.length > 60 ? qText.slice(0, 60) + '...' : qText });
+  };
+
+  // -------------------------------------------------------------
+  // PRACTICAL CODING ASSESSMENT HANDLERS
+  // -------------------------------------------------------------
+  const openAddCodingModal = () => {
+    setEditingCodingId(null);
+    setCodingTitle('');
+    setCodingStatement('');
+    setCodingLang(programmingLanguage || course?.programming_language || 'python');
+    setCodingTopic('coding');
+    setCodingMarks(10);
+    setCodingInputFormat('Standard Input (stdin)');
+    setCodingOutputFormat('Standard Output (stdout)');
+    setCodingConstraints('Time Limit: 4.0s | Memory: 256MB');
+    setSampleCases([
+      { input: '', output: '' },
+      { input: '', output: '' }
+    ]);
+    setHiddenCases([
+      { input: '', output: '' },
+      { input: '', output: '' },
+      { input: '', output: '' },
+      { input: '', output: '' }
+    ]);
+    setReferenceSolution('');
+    setModalValidationMsg(null);
+    setIsCodingModalOpen(true);
+  };
+
+  const openEditCodingModal = (q: any) => {
+    setEditingCodingId(q.id);
+    setCodingTitle(q.title || q.text || '');
+    setCodingStatement(q.problem_statement || q.text || '');
+    setCodingLang(q.programming_language || 'python');
+    setCodingTopic(q.topic_tag || 'coding');
+    setCodingMarks(q.marks || 10);
+    setCodingInputFormat(q.input_format || 'Standard Input (stdin)');
+    setCodingOutputFormat(q.output_format || 'Standard Output (stdout)');
+    setCodingConstraints(q.constraints || 'Time Limit: 4.0s | Memory: 256MB');
+
+    const sc = q.sample_test_cases || [];
+    setSampleCases([
+      { input: sc[0]?.input || '', output: sc[0]?.output || '' },
+      { input: sc[1]?.input || '', output: sc[1]?.output || '' }
+    ]);
+
+    const hc = q.hidden_test_cases || [];
+    setHiddenCases([
+      { input: hc[0]?.input || '', output: hc[0]?.output || '' },
+      { input: hc[1]?.input || '', output: hc[1]?.output || '' },
+      { input: hc[2]?.input || '', output: hc[2]?.output || '' },
+      { input: hc[3]?.input || '', output: hc[3]?.output || '' }
+    ]);
+
+    setReferenceSolution(q.reference_solution || '');
+    setModalValidationMsg(null);
+    setIsCodingModalOpen(true);
+  };
+
+  const handleModalValidateSolution = async () => {
+    if (!referenceSolution.trim()) {
+      setModalValidationMsg({ valid: false, text: 'Please enter a reference solution first.' });
+      return;
+    }
+    try {
+      setModalValidating(true);
+      setModalValidationMsg(null);
+      if (editingCodingId) {
+        const res = await apiClient.post(`/assessments/coding-questions/${editingCodingId}/validate/`, {
+          reference_solution: referenceSolution,
+          language: codingLang
+        });
+        if (res.data.valid) {
+          setModalValidationMsg({ valid: true, text: 'Sandbox Verification PASSED: Reference solution passed all 6 test cases!' });
+        } else {
+          setModalValidationMsg({ valid: false, text: res.data.error || 'Validation failed in sandbox.' });
+        }
+      } else {
+        setModalValidationMsg({ valid: true, text: 'Solution is formatted. Full automated sandbox verification will execute upon saving.' });
+      }
+    } catch (err: any) {
+      setModalValidationMsg({ valid: false, text: err?.response?.data?.error || 'Validation failed in sandbox.' });
+    } finally {
+      setModalValidating(false);
+    }
+  };
+
+  const handleSaveCodingQuestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCourseId) return;
+    if (!codingTitle.trim() || !codingStatement.trim()) {
+      showToast('error', 'Problem title and problem statement are required.');
+      return;
+    }
+    for (let i = 0; i < 2; i++) {
+      if (!sampleCases[i]?.input && !sampleCases[i]?.output) {
+        showToast('error', `Sample test case ${i + 1} must have input and output.`);
+        return;
+      }
+    }
+    for (let i = 0; i < 4; i++) {
+      if (!hiddenCases[i]?.input && !hiddenCases[i]?.output) {
+        showToast('error', `Hidden test case ${i + 1} must have input and output.`);
+        return;
+      }
+    }
+
+    try {
+      setSavingCodingQuestion(true);
+      const payload = {
+        title: codingTitle.trim(),
+        problem_statement: codingStatement.trim(),
+        programming_language: codingLang,
+        topic_tag: codingTopic.trim() || 'coding',
+        difficulty: 'EASY',
+        marks: Number(codingMarks) || 10,
+        input_format: codingInputFormat.trim(),
+        output_format: codingOutputFormat.trim(),
+        constraints: codingConstraints.trim(),
+        sample_test_cases: sampleCases,
+        hidden_test_cases: hiddenCases,
+        reference_solution: referenceSolution.trim(),
+        approval_status: 'APPROVED'
+      };
+
+      if (editingCodingId) {
+        await apiClient.put(`/assessments/coding-questions/${editingCodingId}/`, payload);
+        showToast('success', 'Practical coding problem updated.');
+      } else {
+        await apiClient.post(`/assessments/courses/${selectedCourseId}/coding-questions/`, payload);
+        showToast('success', 'Practical coding problem created and approved for Final Assessment.');
+      }
+
+      setIsCodingModalOpen(false);
+      fetchAssessment(selectedCourseId);
+    } catch (err: any) {
+      const errMsg = err?.response?.data?.error || err?.response?.data?.programming_language || 'Failed to save coding problem.';
+      showToast('error', typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
+    } finally {
+      setSavingCodingQuestion(false);
+    }
+  };
+
+  const handleGenerateAiCoding = async () => {
+    if (!selectedCourseId) return;
+    try {
+      setGeneratingAiCoding(true);
+      const lang = programmingLanguage || course?.programming_language || 'python';
+      const res = await apiClient.post('/assessments/coding-questions/ai-generate/', {
+        course_id: selectedCourseId,
+        programming_language: lang
+      });
+      showToast('success', `AI generated '${res.data.title}' (EASY difficulty)! Please review and publish it.`);
+      fetchAssessment(selectedCourseId);
+    } catch (err: any) {
+      showToast('error', err?.response?.data?.error || 'Failed to generate AI coding problem.');
+    } finally {
+      setGeneratingAiCoding(false);
+    }
+  };
+
+  const handlePublishCoding = async (id: number) => {
+    try {
+      setPublishingCodingId(id);
+      const res = await apiClient.post(`/assessments/coding-questions/${id}/publish/`);
+      showToast('success', res.data.message || 'Coding problem reviewed and published! Active for Final Assessment.');
+      if (selectedCourseId) fetchAssessment(selectedCourseId);
+    } catch (err: any) {
+      showToast('error', err?.response?.data?.error || 'Failed to publish coding problem.');
+    } finally {
+      setPublishingCodingId(null);
+    }
+  };
+
+  const handleValidateCodingInSandbox = async (id: number) => {
+    try {
+      setValidatingCodingId(id);
+      setCodingValidationResult(null);
+      const res = await apiClient.post(`/assessments/coding-questions/${id}/validate/`);
+      setCodingValidationResult({
+        id,
+        valid: res.data.valid,
+        message: res.data.valid ? 'Passed all 6 test cases in sandbox!' : (res.data.error || 'Failed sandbox test')
+      });
+      if (res.data.valid) {
+        showToast('success', 'Sandbox Verification PASSED: Reference solution passed all 6 test cases (2 sample + 4 hidden)!');
+      } else {
+        showToast('error', `Sandbox Verification FAILED: ${res.data.error}`);
+      }
+    } catch (err: any) {
+      setCodingValidationResult({
+        id,
+        valid: false,
+        message: err?.response?.data?.error || 'Validation failed.'
+      });
+      showToast('error', err?.response?.data?.error || 'Sandbox execution error.');
+    } finally {
+      setValidatingCodingId(null);
+    }
+  };
+
+  const handleDeleteCoding = async (id: number, title: string) => {
+    if (!window.confirm(`Are you sure you want to delete the coding problem '${title}'?`)) return;
+    try {
+      await apiClient.delete(`/assessments/coding-questions/${id}/`);
+      showToast('success', 'Coding problem deleted.');
+      if (selectedCourseId) fetchAssessment(selectedCourseId);
+    } catch (err) {
+      showToast('error', 'Failed to delete coding problem.');
+    }
   };
 
   const handleOpenAiModal = () => {
@@ -1218,7 +1491,7 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block font-bold text-slate-700 mb-1">Course Thumbnail Image URL</label>
               <input
@@ -1238,6 +1511,23 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
                 onChange={(e) => setPrereqText(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-600 text-xs"
               />
+            </div>
+            <div>
+              <label className="block font-bold text-slate-700 mb-1 flex items-center gap-1">
+                <Code2 className="w-3.5 h-3.5 text-primary-900" />
+                Programming Language
+              </label>
+              <select
+                value={programmingLanguage}
+                onChange={(e) => setProgrammingLanguage(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-600 text-xs font-semibold"
+              >
+                <option value="">None (Non-Programming Course)</option>
+                <option value="python">Python (Hands-on Coding Assessment)</option>
+                <option value="java">Java (Hands-on Coding Assessment)</option>
+                <option value="c">C Programming (Hands-on Coding Assessment)</option>
+                <option value="cpp">C++ (Hands-on Coding Assessment)</option>
+              </select>
             </div>
           </div>
 
@@ -1761,6 +2051,289 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
             >
               Configure Proctoring Rules &rarr;
             </button>
+          </div>
+
+          {/* ========================================================= */}
+          {/* SECTION 3B: PRACTICAL CODING ASSESSMENT (PROGRAMMING SKILL COURSES) */}
+          {/* ========================================================= */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-950 to-indigo-950 rounded-3xl border border-slate-800 p-6 sm:p-8 text-white space-y-6 shadow-xl">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-5">
+              <div className="space-y-1 max-w-xl">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2.5 py-1 rounded-md bg-accent-500/20 text-accent-300 border border-accent-500/30 text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                    <Code2 className="w-3.5 h-3.5" /> Hands-On Coding Requirement
+                  </span>
+                  <span className="px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold uppercase font-mono">
+                    {programmingLanguage ? programmingLanguage.toUpperCase() : 'PROGRAMMING SKILL'}
+                  </span>
+                  <span className="px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 text-[10px] font-semibold">
+                    Total 6 Test Cases: 2 Visible Sample + 4 Guarded Hidden
+                  </span>
+                </div>
+                <h3 className="text-base sm:text-lg font-black text-white tracking-tight mt-1">
+                  Practical Coding Assessment (1 Required Problem)
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Final certification exams for programming skill courses include 1 practical coding problem. Students test code on 2 visible sample test cases, while official evaluation evaluates 4 server-hidden test cases. Faculty can author manually or generate with AI in Easy difficulty, then review and publish.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleGenerateAiCoding}
+                  disabled={generatingAiCoding}
+                  className="px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-60 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 text-amber-300 ${generatingAiCoding ? 'animate-spin' : ''}`} />
+                  {generatingAiCoding ? 'Generating Easy AI Problem...' : 'Generate Easy Problem with AI'}
+                </button>
+                <button
+                  type="button"
+                  onClick={openAddCodingModal}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <PlusCircle className="w-3.5 h-3.5 text-accent-400" />
+                  Add Coding Problem Manually
+                </button>
+              </div>
+            </div>
+
+            {loadingCodingQuestions ? (
+              <div className="flex items-center justify-center gap-2 p-8 text-slate-400 text-xs">
+                <RefreshCw className="w-4 h-4 animate-spin text-accent-400" />
+                <span>Loading coding challenges...</span>
+              </div>
+            ) : codingQuestions.length === 0 ? (
+              <div className="p-8 rounded-2xl bg-slate-900/60 border border-slate-800 text-center space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-accent-500/10 text-accent-400 flex items-center justify-center mx-auto">
+                  <Terminal className="w-6 h-6" />
+                </div>
+                <div className="max-w-md mx-auto space-y-1">
+                  <h4 className="text-sm font-bold text-slate-200">No Practical Coding Problem Configured Yet</h4>
+                  <p className="text-xs text-slate-400">
+                    Students will not be able to complete practical coding certification without at least 1 published coding problem. Generate a beginner-friendly problem with AI or add your own with 2 sample and 4 hidden test cases.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateAiCoding}
+                    disabled={generatingAiCoding}
+                    className="px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    Generate Easy Problem with AI
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openAddCodingModal}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5" />
+                    Create Manually
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {codingQuestions.map((cq: any) => {
+                  const isPending = cq.approval_status === 'PENDING_REVIEW';
+                  return (
+                    <div
+                      key={cq.id}
+                      className={`rounded-2xl border p-5 sm:p-6 space-y-4 transition-all ${
+                        isPending
+                          ? 'bg-amber-950/20 border-amber-500/40 ring-1 ring-amber-500/30'
+                          : 'bg-slate-900/70 border-slate-800'
+                      }`}
+                    >
+                      {/* Top status bar */}
+                      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-white/10">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2.5 py-0.5 rounded-md bg-slate-800 text-white text-xs font-bold font-mono uppercase">
+                            {cq.programming_language}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold uppercase">
+                            {cq.difficulty || 'EASY'}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
+                            {cq.marks || 10} Marks
+                          </span>
+                          {isPending ? (
+                            <span className="px-2.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                              <Sparkles className="w-3 h-3 text-amber-400" />
+                              AI GENERATED • PENDING REVIEW
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              APPROVED &amp; ACTIVE IN EXAM
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {isPending && (
+                            <button
+                              type="button"
+                              onClick={() => handlePublishCoding(cq.id)}
+                              disabled={publishingCodingId === cq.id}
+                              className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md transition-all cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              {publishingCodingId === cq.id ? 'Publishing...' : 'Review & Publish Problem'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => openEditCodingModal(cq)}
+                            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-700 transition-all cursor-pointer"
+                            title="Edit Problem"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCoding(cq.id, cq.title || cq.text)}
+                            className="p-1.5 bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 rounded-lg border border-slate-700 transition-all cursor-pointer"
+                            title="Delete Problem"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Title & Statement */}
+                      <div className="space-y-2">
+                        <h4 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                          {cq.title || cq.text}
+                        </h4>
+                        <p className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">
+                          {cq.problem_statement || cq.text}
+                        </p>
+                      </div>
+
+                      {/* Input/Output Formats & Constraints */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                        <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 space-y-1">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Input Format</span>
+                          <p className="text-slate-300 font-mono text-[11px] whitespace-pre-wrap">{cq.input_format || 'stdin'}</p>
+                        </div>
+                        <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 space-y-1">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Output Format</span>
+                          <p className="text-slate-300 font-mono text-[11px] whitespace-pre-wrap">{cq.output_format || 'stdout'}</p>
+                        </div>
+                        <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 space-y-1">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Constraints</span>
+                          <p className="text-slate-300 font-mono text-[11px] whitespace-pre-wrap">{cq.constraints || 'Standard limits'}</p>
+                        </div>
+                      </div>
+
+                      {/* 2 Sample Test Cases (Visible to Students) */}
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-accent-300">
+                          <Terminal className="w-3.5 h-3.5" />
+                          <span>Visible Sample Test Cases (2/2) — Visible to Student for Testing:</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+                          {(cq.sample_test_cases || []).map((stc: any, sIdx: number) => (
+                            <div key={sIdx} className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
+                              <div className="flex items-center justify-between font-sans text-[10px] text-slate-400 border-b border-slate-800 pb-1">
+                                <span className="font-bold text-slate-300">Sample Case {sIdx + 1}</span>
+                                <span className="text-emerald-400 font-bold">Public / Visible</span>
+                              </div>
+                              <div className="space-y-0.5">
+                                <span className="text-[10px] text-slate-500 font-sans uppercase font-bold">Input:</span>
+                                <pre className="bg-slate-900 p-2 rounded text-slate-200 text-xs overflow-x-auto">{stc.input || '(empty)'}</pre>
+                              </div>
+                              <div className="space-y-0.5">
+                                <span className="text-[10px] text-slate-500 font-sans uppercase font-bold">Expected Output:</span>
+                                <pre className="bg-slate-900 p-2 rounded text-emerald-400 text-xs overflow-x-auto">{stc.output || ''}</pre>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* 4 Hidden Test Cases (Server Evaluation Only) */}
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400">
+                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Hidden Test Cases (4/4) — Evaluated on Server (Never Exposed to Student):</span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+                          {(cq.hidden_test_cases || []).map((htc: any, hIdx: number) => (
+                            <div key={hIdx} className="p-2.5 bg-slate-950/80 rounded-xl border border-slate-800/80 space-y-1">
+                              <div className="flex items-center justify-between font-sans text-[10px] text-slate-400 border-b border-slate-800/60 pb-1">
+                                <span className="font-bold text-amber-300/90">Hidden #{hIdx + 1}</span>
+                                <Lock className="w-2.5 h-2.5 text-slate-500" />
+                              </div>
+                              <div className="text-[10px]">
+                                <span className="text-slate-500 font-sans">In: </span>
+                                <span className="text-slate-300">{htc.input ? (htc.input.length > 15 ? htc.input.slice(0, 15) + '...' : htc.input) : '(empty)'}</span>
+                              </div>
+                              <div className="text-[10px]">
+                                <span className="text-slate-500 font-sans">Out: </span>
+                                <span className="text-emerald-400">{htc.output ? (htc.output.length > 15 ? htc.output.slice(0, 15) + '...' : htc.output) : ''}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Reference Solution & Sandbox Verification */}
+                      {cq.reference_solution && (
+                        <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2.5">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                              <Code2 className="w-3.5 h-3.5 text-accent-400" />
+                              Reference Solution ({cq.programming_language ? cq.programming_language.toUpperCase() : 'CODE'}):
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleValidateCodingInSandbox(cq.id)}
+                              disabled={validatingCodingId === cq.id}
+                              className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-accent-300 text-xs font-bold rounded-lg border border-slate-700 flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                            >
+                              <PlayCircle className={`w-3.5 h-3.5 ${validatingCodingId === cq.id ? 'animate-spin' : ''}`} />
+                              {validatingCodingId === cq.id ? 'Testing in Sandbox...' : 'Validate Solution in Sandbox'}
+                            </button>
+                          </div>
+                          <pre className="p-3 bg-slate-900 rounded-xl text-slate-200 font-mono text-xs overflow-x-auto max-h-40">
+                            {cq.reference_solution}
+                          </pre>
+                          {codingValidationResult && codingValidationResult.id === cq.id && (
+                            <div className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
+                              codingValidationResult.valid
+                                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                                : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+                            }`}>
+                              {codingValidationResult.valid ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
+                              <span>{codingValidationResult.message}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Multiple Choice Questions Container */}
+          <div className="space-y-4 pt-4 border-t border-slate-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900">
+                  Multiple Choice Examination Questions
+                </h4>
+                <p className="text-xs text-slate-500">
+                  Concept questions evaluating theory, architecture, and syntax knowledge.
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* Questions Container */}
@@ -3548,6 +4121,307 @@ export const CourseBuilderStudio: React.FC<CourseBuilderStudioProps> = ({
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* MODAL 11: PRACTICAL CODING QUESTION (MANUAL / EDIT) MODAL */}
+      {/* =================================================================== */}
+      {isCodingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 space-y-4 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-accent-600 to-emerald-600 text-white flex items-center justify-center shadow-xs">
+                  <Code2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {editingCodingId ? 'Edit Practical Coding Problem' : 'Configure Practical Coding Problem'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Final Assessment Coding Standard: Exactly 2 visible sample test cases + 4 hidden evaluation cases (Total 6).
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCodingModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg hover:bg-slate-100 transition-all cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveCodingQuestion} className="space-y-4 text-xs overflow-y-auto flex-grow pr-1">
+              {/* Problem Title, Language, Marks */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block font-bold text-slate-700 mb-1">Problem Title *</label>
+                  <input
+                    type="text"
+                    value={codingTitle}
+                    onChange={(e) => setCodingTitle(e.target.value)}
+                    placeholder="e.g., Sum of Array Elements"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-semibold text-xs focus:ring-2 focus:ring-accent-600 focus:outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Language *</label>
+                  <select
+                    value={codingLang}
+                    onChange={(e) => setCodingLang(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-bold text-xs"
+                    required
+                  >
+                    <option value="python">Python</option>
+                    <option value="java">Java</option>
+                    <option value="c">C</option>
+                    <option value="cpp">C++</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Assessment Marks</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={codingMarks}
+                    onChange={(e) => setCodingMarks(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-bold text-center text-xs"
+                  />
+                </div>
+              </div>
+
+              {/* Topic Tag and Constraints */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Topic Tag</label>
+                  <input
+                    type="text"
+                    value={codingTopic}
+                    onChange={(e) => setCodingTopic(e.target.value)}
+                    placeholder="e.g. arrays, algorithms"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Execution Constraints</label>
+                  <input
+                    type="text"
+                    value={codingConstraints}
+                    onChange={(e) => setCodingConstraints(e.target.value)}
+                    placeholder="Time Limit: 4.0s | Memory: 256MB"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Problem Statement */}
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Problem Statement / Prompt *</label>
+                <textarea
+                  rows={4}
+                  value={codingStatement}
+                  onChange={(e) => setCodingStatement(e.target.value)}
+                  placeholder="Describe the problem, task, and context clearly..."
+                  className="w-full p-3 bg-slate-50 border border-slate-300 rounded-xl text-xs leading-relaxed focus:ring-2 focus:ring-accent-600 focus:outline-none"
+                  required
+                />
+              </div>
+
+              {/* Input Format & Output Format */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Input Format</label>
+                  <textarea
+                    rows={2}
+                    value={codingInputFormat}
+                    onChange={(e) => setCodingInputFormat(e.target.value)}
+                    placeholder="Describe how input is supplied..."
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Output Format</label>
+                  <textarea
+                    rows={2}
+                    value={codingOutputFormat}
+                    onChange={(e) => setCodingOutputFormat(e.target.value)}
+                    placeholder="Describe expected output format..."
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Section: 2 Sample Test Cases (Visible to Students) */}
+              <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-emerald-700" />
+                    <span className="font-bold text-emerald-950 text-xs">
+                      Visible Sample Test Cases (Exactly 2 required)
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-full">
+                    Student Visible (Testing &amp; Understanding)
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {sampleCases.map((tc, idx) => (
+                    <div key={idx} className="p-3 bg-white rounded-xl border border-emerald-300 shadow-2xs space-y-2">
+                      <span className="font-bold text-emerald-900 text-[11px] block">Sample Case #{idx + 1}</span>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-0.5">Input:</label>
+                        <textarea
+                          rows={2}
+                          value={tc.input}
+                          onChange={(e) => {
+                            const updated = [...sampleCases];
+                            updated[idx].input = e.target.value;
+                            setSampleCases(updated);
+                          }}
+                          placeholder="Sample input data..."
+                          className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-0.5">Expected Output:</label>
+                        <textarea
+                          rows={2}
+                          value={tc.output}
+                          onChange={(e) => {
+                            const updated = [...sampleCases];
+                            updated[idx].output = e.target.value;
+                            setSampleCases(updated);
+                          }}
+                          placeholder="Sample expected output..."
+                          className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Section: 4 Hidden Test Cases (Server-side Grading Only) */}
+              <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-amber-700" />
+                    <span className="font-bold text-amber-950 text-xs">
+                      Hidden Evaluation Test Cases (Exactly 4 required)
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-semibold text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-full">
+                    Server Only (Never Exposed to Student)
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  {hiddenCases.map((tc, idx) => (
+                    <div key={idx} className="p-2.5 bg-white rounded-xl border border-amber-300 shadow-2xs space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-amber-900 text-[11px]">Hidden #{idx + 1}</span>
+                        <Lock className="w-3 h-3 text-amber-600" />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-bold text-slate-400 block">Input:</label>
+                        <textarea
+                          rows={2}
+                          value={tc.input}
+                          onChange={(e) => {
+                            const updated = [...hiddenCases];
+                            updated[idx].input = e.target.value;
+                            setHiddenCases(updated);
+                          }}
+                          placeholder="Hidden input..."
+                          className="w-full p-1 bg-slate-50 border border-slate-200 rounded text-xs font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-bold text-slate-400 block">Expected Output:</label>
+                        <textarea
+                          rows={2}
+                          value={tc.output}
+                          onChange={(e) => {
+                            const updated = [...hiddenCases];
+                            updated[idx].output = e.target.value;
+                            setHiddenCases(updated);
+                          }}
+                          placeholder="Hidden output..."
+                          className="w-full p-1 bg-slate-50 border border-slate-200 rounded text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Section: Reference Solution & Verification */}
+              <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 text-slate-100 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <Code2 className="w-4 h-4 text-accent-400" />
+                    <span className="font-bold text-xs">Reference Solution ({codingLang.toUpperCase()})</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleModalValidateSolution}
+                    disabled={modalValidating}
+                    className="px-3 py-1.5 bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                  >
+                    <PlayCircle className={`w-3.5 h-3.5 ${modalValidating ? 'animate-spin' : ''}`} />
+                    {modalValidating ? 'Verifying in Sandbox...' : 'Test & Verify Solution'}
+                  </button>
+                </div>
+                <textarea
+                  rows={5}
+                  value={referenceSolution}
+                  onChange={(e) => setReferenceSolution(e.target.value)}
+                  placeholder={`# Reference solution in ${codingLang}\n# Must pass all 2 sample + 4 hidden test cases`}
+                  className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-emerald-400 focus:outline-none focus:border-accent-500"
+                />
+                {modalValidationMsg && (
+                  <div className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
+                    modalValidationMsg.valid
+                      ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                      : 'bg-rose-950/70 border-rose-500/50 text-rose-300'
+                  }`}>
+                    {modalValidationMsg.valid ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span>{modalValidationMsg.text}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsCodingModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition-all cursor-pointer text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingCodingQuestion}
+                  className="px-5 py-2 bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-bold rounded-xl shadow-xs flex items-center gap-1.5 transition-all cursor-pointer text-xs"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {savingCodingQuestion
+                    ? 'Saving Problem...'
+                    : editingCodingId
+                    ? 'Update Coding Problem'
+                    : 'Save & Approve for Final Assessment'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

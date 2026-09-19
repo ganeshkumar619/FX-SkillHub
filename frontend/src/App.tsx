@@ -18,6 +18,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { MentorPage } from './pages/MentorPage';
 import { AdminPage } from './pages/AdminPage';
 import { GoogleCallback } from './pages/GoogleCallback';
+import { ModuleLearningView } from './pages/ModuleLearningView';
+import { FacultyActivationPage } from './pages/FacultyActivationPage';
 
 // Protected Route Component for Auth
 const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({
@@ -60,6 +62,8 @@ export const App: React.FC = () => {
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/auth/google/callback" element={<GoogleCallback />} />
+              <Route path="/activate-faculty/:token" element={<FacultyActivationPage />} />
+              <Route path="/activate-faculty" element={<FacultyActivationPage />} />
               <Route path="/verify-certificate/:certificateId" element={<CertificateVerify />} />
               <Route path="/verify/:certificateId" element={<CertificateVerify />} />
 
@@ -69,6 +73,22 @@ export const App: React.FC = () => {
                 element={
                   <ProtectedRoute allowedRoles={['STUDENT', 'FACULTY', 'MENTOR', 'ADMIN']}>
                     <CourseViewer />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/courses/:courseId/modules/:moduleId"
+                element={
+                  <ProtectedRoute allowedRoles={['STUDENT', 'FACULTY', 'MENTOR', 'ADMIN']}>
+                    <ModuleLearningView />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/learn/:slug/modules/:moduleId"
+                element={
+                  <ProtectedRoute allowedRoles={['STUDENT', 'FACULTY', 'MENTOR', 'ADMIN']}>
+                    <ModuleLearningView />
                   </ProtectedRoute>
                 }
               />

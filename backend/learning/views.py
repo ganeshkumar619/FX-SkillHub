@@ -188,6 +188,31 @@ class CompleteModuleView(views.APIView):
             'summary': course_summary
         })
 
+    def get(self, request, module_id=None):
+        if not module_id:
+            module_id = request.query_params.get('module_id')
+        if not module_id:
+            return Response({'error': 'module_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            module = Module.objects.select_related('course').get(id=module_id)
+        except Module.DoesNotExist:
+            return Response({'error': 'Module not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        from .services import calculate_module_progress, calculate_course_progress
+        mod_summary = calculate_module_progress(request.user.id, module.id)
+        course_summary = calculate_course_progress(request.user.id, module.course_id)
+        return Response({
+            'module_id': module.id,
+            'is_completed': mod_summary['is_completed'],
+            'module_completed': mod_summary['is_completed'],
+            'details': mod_summary,
+            'course_completed': course_summary['is_completed'],
+            'assessment_unlocked': course_summary['assessment_unlocked'],
+            'completed_modules': course_summary['completed_modules'],
+            'total_required_modules': course_summary['total_required_modules']
+        })
+
 
 class VideoProgressView(views.APIView):
     """

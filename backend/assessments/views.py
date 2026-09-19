@@ -7,13 +7,33 @@ from .models import Assessment, Question, QuestionOption, AssessmentAttempt, Stu
 from .serializers import (
     AssessmentBriefSerializer,
     AssessmentAttemptDetailSerializer,
-    AssessmentResultSerializer
+    AssessmentResultSerializer,
+    QuestionAdminSerializer,
+    CodingQuestionCreateSerializer
 )
 from .skill_gap_service import SkillGapService
 from .question_bank_service import QuestionBankService
+from .code_execution_service import CodeExecutionService
+from .ai_coding_service import AICodingQuestionService
 from proctoring.models import ProctoringEvent, RiskScore
 from learning.models import Enrollment
 from audit.models import AuditLog
+from catalogue.models import Course
+
+
+def normalize_language_name(lang: str) -> str:
+    if not lang:
+        return ''
+    l = lang.lower().strip()
+    if l in ('python', 'py', 'python3'):
+        return 'python'
+    if l in ('c++', 'cpp'):
+        return 'cpp'
+    if l in ('java',):
+        return 'java'
+    if l in ('c',):
+        return 'c'
+    return l
 
 class CoursePreAssessmentView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -33,13 +53,36 @@ class CourseFinalAssessmentView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, course_id):
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return Response({'error': 'Course not found'}, status=status.HTTP_404_NOT_FOUND)
+
         final_assess = Assessment.objects.filter(
-            course_id=course_id,
+            course=course,
             assessment_type='FINAL_ASSESSMENT',
             is_published=True
         ).first()
+
         if not final_assess:
-            return Response({'error': 'No final assessment configured for this course'}, status=status.HTTP_404_NOT_FOUND)
+            # Check if faculty has added coding questions for this course
+            has_coding = Question.objects.filter(course=course, question_type='CODING', approval_status='APPROVED').exists()
+            if has_coding:
+                final_assess = Assessment.objects.create(
+                    course=course,
+                    title=f"{course.title} Final Certification Assessment",
+                    assessment_type='FINAL_ASSESSMENT',
+                    duration_minutes=30,
+                    pass_percentage=70.0,
+                    is_published=True
+                )
+                Question.objects.filter(course=course, question_type='CODING', assessment__isnull=True).update(assessment=final_assess)
+            else:
+                return Response({'error': 'No final assessment configured for this course'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            # Ensure any approved coding questions for this course are linked to the final assessment
+            Question.objects.filter(course=course, question_type='CODING', assessment__isnull=True).update(assessment=final_assess)
+
         return Response(AssessmentBriefSerializer(final_assess).data)
 
 
@@ -243,6 +286,21 @@ class AutosaveAnswerView(views.APIView):
         if not question:
             return Response({'error': 'Question does not belong to this assessment'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Handle coding question draft autosave
+        if question.question_type == 'CODING':
+            ans, _ = StudentAnswer.objects.get_or_create(attempt=attempt, question=question)
+            if 'submitted_code' in request.data:
+                ans.submitted_code = request.data.get('submitted_code', '')
+            if 'code_language' in request.data:
+                ans.code_language = request.data.get('code_language', '')
+            ans.save(update_fields=['submitted_code', 'code_language'])
+            return Response({
+                'status': 'saved',
+                'question_id': question.id,
+                'submitted_code': ans.submitted_code,
+                'code_language': ans.code_language
+            })
+
         # 2. Validate Selected Options belong strictly to this question (Section 7)
         if option_ids:
             # Check for any option that does not belong to this question
@@ -344,6 +402,45 @@ class SubmitAssessmentView(views.APIView):
                 ans_obj.selected_options.set(valid_opts)
                 ans_obj.save()
 
+        # If payload contains coding answers, persist and evaluate them server-side if not yet evaluated
+        coding_answers = request.data.get('coding_answers')
+        if coding_answers and isinstance(coding_answers, dict):
+            for q_id, c_data in coding_answers.items():
+                if not q_id:
+                    continue
+                q_obj = Question.objects.filter(id=q_id, question_type='CODING').first()
+                if q_obj and isinstance(c_data, dict):
+                    code = c_data.get('code') or c_data.get('submitted_code')
+                    lang = c_data.get('language') or c_data.get('code_language') or q_obj.programming_language
+                    if code:
+                        ans_obj, _ = StudentAnswer.objects.get_or_create(attempt=attempt, question=q_obj)
+                        if not ans_obj.total_test_cases or ans_obj.submitted_code != code:
+                            eval_res = CodeExecutionService.evaluate_code(
+                                language=normalize_language_name(lang),
+                                code=code,
+                                sample_test_cases=q_obj.sample_test_cases,
+                                hidden_test_cases=q_obj.hidden_test_cases,
+                                is_submission=True
+                            )
+                            ans_obj.submitted_code = code
+                            ans_obj.code_language = normalize_language_name(lang)
+                            ans_obj.test_cases_passed = eval_res.get('total_passed', 0)
+                            ans_obj.total_test_cases = eval_res.get('total_count', 6)
+                            ans_obj.is_correct = eval_res.get('passed', False)
+                            ans_obj.marks_obtained = round((ans_obj.test_cases_passed / float(ans_obj.total_test_cases)) * q_obj.marks, 1) if ans_obj.total_test_cases > 0 else 0.0
+                            ans_obj.code_execution_details = {
+                                'sample_passed': eval_res.get('sample_passed', 0),
+                                'sample_total': eval_res.get('sample_total', 2),
+                                'hidden_passed': eval_res.get('hidden_passed', 0),
+                                'hidden_total': eval_res.get('hidden_total', 4),
+                                'total_passed': eval_res.get('total_passed', 0),
+                                'total_count': eval_res.get('total_count', 6),
+                                'passed': eval_res.get('passed', False),
+                                'sample_results': eval_res.get('sample_results', []),
+                                'hidden_summary': eval_res.get('hidden_summary', {})
+                            }
+                            ans_obj.save()
+
         attempt.submitted_at = timezone.now()
         attempt.evaluate()
 
@@ -389,3 +486,478 @@ class AssessmentAttemptResultView(views.APIView):
             resp_data['skill_gap_analysis'] = SkillGapService.analyze_skill_gap(attempt)
 
         return Response(resp_data)
+
+
+class RunCodeView(views.APIView):
+    """
+    Executes student code against the 2 visible sample test cases only.
+    Returns detailed input, expected output, actual output, and pass/fail for each sample.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, attempt_id):
+        try:
+            attempt = AssessmentAttempt.objects.get(id=attempt_id, student=request.user)
+        except AssessmentAttempt.DoesNotExist:
+            return Response({'error': 'Attempt not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if attempt.status == 'TERMINATED_SECURITY_VIOLATION':
+            return Response({
+                'error': 'Assessment attempt has been terminated for a security violation.',
+                'status': 'TERMINATED_SECURITY_VIOLATION'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if attempt.status not in ('IN_PROGRESS', 'WARNING') or attempt.is_expired():
+            return Response({'error': 'Attempt is no longer in progress.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        question_id = request.data.get('question_id')
+        code = request.data.get('code', '')
+        language = request.data.get('language', '')
+
+        if not question_id:
+            return Response({'error': 'question_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not code or not code.strip():
+            return Response({'error': 'Code cannot be empty.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        question = Question.objects.filter(id=question_id).first()
+        if not question:
+            return Response({'error': 'Question not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if question.question_type != 'CODING':
+            return Response({'error': 'Target question is not a coding question'}, status=status.HTTP_400_BAD_REQUEST)
+
+        req_lang = normalize_language_name(question.programming_language)
+        sub_lang = normalize_language_name(language)
+
+        if req_lang and sub_lang != req_lang:
+            return Response({
+                'error': f"Language mismatch: This question requires {req_lang.upper()}, but you selected {sub_lang.upper()}."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Execute strictly against 2 sample test cases
+        result = CodeExecutionService.evaluate_code(
+            language=sub_lang,
+            code=code,
+            sample_test_cases=question.sample_test_cases,
+            is_submission=False
+        )
+
+        return Response(result)
+
+
+class SubmitCodeView(views.APIView):
+    """
+    Server-authoritatively evaluates student code against ALL 6 test cases (2 sample + 4 hidden).
+    Saves student answer, calculates score, and returns test case summary WITHOUT leaking hidden data.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, attempt_id):
+        try:
+            attempt = AssessmentAttempt.objects.get(id=attempt_id, student=request.user)
+        except AssessmentAttempt.DoesNotExist:
+            return Response({'error': 'Attempt not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if attempt.status == 'TERMINATED_SECURITY_VIOLATION':
+            return Response({
+                'error': 'Assessment attempt has been terminated for a security violation.',
+                'status': 'TERMINATED_SECURITY_VIOLATION'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if attempt.status not in ('IN_PROGRESS', 'WARNING') or attempt.is_expired():
+            return Response({'error': 'Attempt is no longer in progress.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        question_id = request.data.get('question_id')
+        code = request.data.get('code', '')
+        language = request.data.get('language', '')
+
+        if not question_id:
+            return Response({'error': 'question_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not code or not code.strip():
+            return Response({'error': 'Code cannot be empty.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        question = Question.objects.filter(id=question_id).first()
+        if not question:
+            return Response({'error': 'Question not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if question.question_type != 'CODING':
+            return Response({'error': 'Target question is not a coding question'}, status=status.HTTP_400_BAD_REQUEST)
+
+        req_lang = normalize_language_name(question.programming_language)
+        sub_lang = normalize_language_name(language)
+
+        if req_lang and sub_lang != req_lang:
+            return Response({
+                'error': f"Language mismatch: This question requires {req_lang.upper()}, but you selected {sub_lang.upper()}."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Server-side execution against all 6 test cases
+        result = CodeExecutionService.evaluate_code(
+            language=sub_lang,
+            code=code,
+            sample_test_cases=question.sample_test_cases,
+            hidden_test_cases=question.hidden_test_cases,
+            is_submission=True
+        )
+
+        ans, _ = StudentAnswer.objects.get_or_create(attempt=attempt, question=question)
+        ans.submitted_code = code
+        ans.code_language = sub_lang
+        ans.test_cases_passed = result.get('total_passed', 0)
+        ans.total_test_cases = result.get('total_count', 6)
+        ans.is_correct = result.get('passed', False)
+        ans.marks_obtained = round((ans.test_cases_passed / float(ans.total_test_cases)) * question.marks, 1) if ans.total_test_cases > 0 else 0.0
+        ans.code_execution_details = {
+            'sample_passed': result.get('sample_passed', 0),
+            'sample_total': result.get('sample_total', 2),
+            'hidden_passed': result.get('hidden_passed', 0),
+            'hidden_total': result.get('hidden_total', 4),
+            'total_passed': result.get('total_passed', 0),
+            'total_count': result.get('total_count', 6),
+            'passed': result.get('passed', False),
+            'sample_results': result.get('sample_results', []),
+            'hidden_summary': result.get('hidden_summary', {})
+        }
+        ans.save()
+
+        result['marks_obtained'] = ans.marks_obtained
+        result['max_marks'] = question.marks
+
+        return Response(result)
+
+
+class CourseCodingQuestionListView(views.APIView):
+    """
+    List and create course-specific coding questions (Faculty & Admin).
+    Enforces exactly 2 sample test cases + 4 hidden test cases.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, course_id):
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return Response({'error': 'Course not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        questions = Question.objects.filter(
+            Q(course=course) | Q(assessment__course=course),
+            question_type='CODING'
+        ).distinct().order_by('-id')
+
+        serializer = QuestionAdminSerializer(questions, many=True)
+        return Response({
+            'course_id': course.id,
+            'course_title': course.title,
+            'programming_language': course.get_programming_language(),
+            'total_coding_questions': questions.count(),
+            'questions': serializer.data
+        })
+
+    def post(self, request, course_id):
+        if not (request.user.is_faculty() or request.user.role == 'ADMIN' or request.user.is_staff):
+            return Response({'error': 'Only authorized faculty and mentors can create coding questions.'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return Response({'error': 'Course not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data.copy()
+        data['course'] = course.id
+        data['question_type'] = 'CODING'
+
+        # Infer programming language if omitted
+        if not data.get('programming_language'):
+            data['programming_language'] = course.get_programming_language() or 'python'
+        else:
+            data['programming_language'] = normalize_language_name(data['programming_language'])
+
+        # Set default text if omitted
+        if not data.get('text') and data.get('problem_statement'):
+            data['text'] = f"{data.get('title', 'Coding Question')}\n\n{data.get('problem_statement')}"
+
+        serializer = CodingQuestionCreateSerializer(data=data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check for semantic duplicates in this course
+        statement = data.get('problem_statement') or data.get('text', '')
+        is_dup, dup_msg = QuestionBankService.is_duplicate(course_id, statement)
+        if is_dup:
+            return Response({'error': f"Duplicate question detected: {dup_msg}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Optional reference solution validation
+        ref_sol = data.get('reference_solution')
+        if ref_sol and ref_sol.strip():
+            is_valid, val_err = CodeExecutionService.validate_reference_solution(
+                language=data['programming_language'],
+                reference_solution=ref_sol,
+                sample_test_cases=data.get('sample_test_cases', []),
+                hidden_test_cases=data.get('hidden_test_cases', [])
+            )
+            if not is_valid:
+                return Response({'error': f"Reference solution validation failed: {val_err}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        approval = data.get('approval_status') or 'APPROVED'
+        question = serializer.save(
+            is_bank_question=True,
+            status='ACTIVE',
+            question_type='CODING',
+            approval_status=approval
+        )
+
+        # Set course.programming_language if missing
+        if not course.programming_language and question.programming_language:
+            course.programming_language = question.programming_language
+            course.save(update_fields=['programming_language'])
+
+        # Ensure course's FINAL_ASSESSMENT exists and link question
+        final_assess = Assessment.objects.filter(course=course, assessment_type='FINAL_ASSESSMENT').first()
+        if not final_assess:
+            final_assess = Assessment.objects.create(
+                course=course,
+                title=f"{course.title} Final Certification Assessment",
+                assessment_type='FINAL_ASSESSMENT',
+                duration_minutes=30,
+                pass_percentage=70.0,
+                is_published=True
+            )
+        question.assessment = final_assess
+        question.save(update_fields=['assessment'])
+
+        return Response(QuestionAdminSerializer(question).data, status=status.HTTP_201_CREATED)
+
+
+class CodingQuestionDetailView(views.APIView):
+    """
+    Retrieve, update, or delete a coding question (Faculty & Admin).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self, question_id):
+        return Question.objects.filter(id=question_id, question_type='CODING').first()
+
+    def get(self, request, question_id):
+        question = self.get_object(question_id)
+        if not question:
+            return Response({'error': 'Coding question not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(QuestionAdminSerializer(question).data)
+
+    def put(self, request, question_id):
+        if not (request.user.is_faculty() or request.user.role == 'ADMIN' or request.user.is_staff):
+            return Response({'error': 'Only authorized faculty and mentors can edit coding questions.'}, status=status.HTTP_403_FORBIDDEN)
+
+        question = self.get_object(question_id)
+        if not question:
+            return Response({'error': 'Coding question not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = CodingQuestionCreateSerializer(question, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate reference solution if provided
+        ref_sol = request.data.get('reference_solution') or question.reference_solution
+        samples = request.data.get('sample_test_cases') or question.sample_test_cases
+        hiddens = request.data.get('hidden_test_cases') or question.hidden_test_cases
+        lang = normalize_language_name(request.data.get('programming_language') or question.programming_language)
+
+        if ref_sol and ref_sol.strip():
+            is_valid, val_err = CodeExecutionService.validate_reference_solution(
+                language=lang,
+                reference_solution=ref_sol,
+                sample_test_cases=samples,
+                hidden_test_cases=hiddens
+            )
+            if not is_valid:
+                return Response({'error': f"Reference solution validation failed: {val_err}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated_q = serializer.save()
+        return Response(QuestionAdminSerializer(updated_q).data)
+
+    def patch(self, request, question_id):
+        return self.put(request, question_id)
+
+    def delete(self, request, question_id):
+        if not (request.user.is_faculty() or request.user.role == 'ADMIN' or request.user.is_staff):
+            return Response({'error': 'Only authorized faculty and mentors can delete coding questions.'}, status=status.HTTP_403_FORBIDDEN)
+
+        question = self.get_object(question_id)
+        if not question:
+            return Response({'error': 'Coding question not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        question.delete()
+        return Response({'message': 'Coding question deleted successfully.'}, status=status.HTTP_200_OK)
+
+
+class CodingQuestionValidateView(views.APIView):
+    """
+    Validates a coding question's reference solution against all 6 test cases.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, question_id):
+        question = Question.objects.filter(id=question_id, question_type='CODING').first()
+        if not question:
+            return Response({'error': 'Coding question not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        ref_sol = request.data.get('reference_solution') or question.reference_solution
+        if not ref_sol:
+            return Response({'error': 'No reference solution provided to validate.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        lang = normalize_language_name(request.data.get('language') or question.programming_language)
+        samples = question.sample_test_cases or []
+        hiddens = question.hidden_test_cases or []
+
+        is_valid, val_err = CodeExecutionService.validate_reference_solution(
+            language=lang,
+            reference_solution=ref_sol,
+            sample_test_cases=samples,
+            hidden_test_cases=hiddens
+        )
+
+        return Response({
+            'valid': is_valid,
+            'error': val_err,
+            'message': "Reference solution successfully passed all 6 test cases!" if is_valid else val_err
+        })
+
+
+class AICodingQuestionGenerateView(views.APIView):
+    """
+    Generates a beginner-friendly (EASY) coding question using AI grounded in course syllabus.
+    Executes and validates the reference solution against all 6 test cases in the sandbox before saving.
+    Saves as AI_GENERATED with approval_status='PENDING_REVIEW'.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not (request.user.is_faculty() or request.user.role == 'ADMIN' or request.user.is_staff):
+            return Response({'error': 'Only faculty and mentors can generate coding questions.'}, status=status.HTTP_403_FORBIDDEN)
+
+        course_id = request.data.get('course_id')
+        preferred_lang = request.data.get('programming_language')
+        topic = request.data.get('topic')
+
+        if not course_id:
+            return Response({'error': 'course_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return Response({'error': 'Course not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        q_data, err = AICodingQuestionService.generate_and_validate_question(
+            course_id=course.id,
+            preferred_language=preferred_lang,
+            topic=topic
+        )
+
+        if err or not q_data:
+            return Response({
+                'error': err or 'AI question validation failed. Please regenerate or edit the question.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create question record
+        question = Question.objects.create(
+            course=course,
+            title=q_data['title'],
+            problem_statement=q_data['problem_statement'],
+            text=q_data['text'],
+            topic_tag=q_data['topic_tag'],
+            question_type='CODING',
+            difficulty='EASY',
+            marks=q_data.get('marks', 5),
+            programming_language=q_data['programming_language'],
+            input_format=q_data['input_format'],
+            output_format=q_data['output_format'],
+            constraints=q_data['constraints'],
+            sample_test_cases=q_data['sample_test_cases'],
+            hidden_test_cases=q_data['hidden_test_cases'],
+            reference_solution=q_data['reference_solution'],
+            is_bank_question=True,
+            approval_status='PENDING_REVIEW',
+            status='ACTIVE'
+        )
+
+        # Link to course's final assessment if available
+        final_assess = Assessment.objects.filter(course=course, assessment_type='FINAL_ASSESSMENT').first()
+        if final_assess:
+            question.assessment = final_assess
+            question.save(update_fields=['assessment'])
+
+        return Response(QuestionAdminSerializer(question).data, status=status.HTTP_201_CREATED)
+
+
+class CodingQuestionPublishView(views.APIView):
+    """
+    Enables faculty to review and publish/approve a coding question (e.g. AI-generated or draft).
+    Validates that:
+    1. Exactly 2 visible sample test cases and 4 hidden test cases exist.
+    2. Reference solution passes all 6 test cases in the sandbox.
+    3. Sets approval_status to 'APPROVED' and activates it for the final assessment.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, question_id):
+        if not (request.user.is_faculty() or request.user.role == 'ADMIN' or request.user.is_staff):
+            return Response({'error': 'Only authorized faculty and mentors can publish coding questions.'}, status=status.HTTP_403_FORBIDDEN)
+
+        question = Question.objects.filter(id=question_id, question_type='CODING').first()
+        if not question:
+            return Response({'error': 'Coding question not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Validate test cases structure
+        samples = question.sample_test_cases or []
+        hiddens = question.hidden_test_cases or []
+
+        if len(samples) != 2:
+            return Response({'error': f"Coding question must have exactly 2 sample test cases, found {len(samples)}."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(hiddens) != 4:
+            return Response({'error': f"Coding question must have exactly 4 hidden test cases, found {len(hiddens)}."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate reference solution in sandbox if present
+        ref_sol = question.reference_solution
+        if ref_sol and ref_sol.strip():
+            lang = normalize_language_name(question.programming_language)
+            is_valid, val_err = CodeExecutionService.validate_reference_solution(
+                language=lang,
+                reference_solution=ref_sol,
+                sample_test_cases=samples,
+                hidden_test_cases=hiddens
+            )
+            if not is_valid:
+                return Response({'error': f"Reference solution validation failed before publishing: {val_err}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Set approved and active
+        question.approval_status = 'APPROVED'
+        question.status = 'ACTIVE'
+        question.is_bank_question = True
+
+        # Attach to course final assessment if available
+        if question.course:
+            if not question.assessment:
+                final_assess = Assessment.objects.filter(course=question.course, assessment_type='FINAL_ASSESSMENT').first()
+                if not final_assess:
+                    final_assess = Assessment.objects.create(
+                        course=question.course,
+                        title=f"{question.course.title} - Final Assessment",
+                        assessment_type='FINAL_ASSESSMENT',
+                        status='PUBLISHED',
+                        passing_score=50.0,
+                        duration_minutes=45,
+                        total_marks=100.0,
+                    )
+                question.assessment = final_assess
+
+            if question.programming_language and not question.course.programming_language:
+                question.course.programming_language = question.programming_language
+                question.course.save(update_fields=['programming_language'])
+
+        question.save()
+
+        return Response({
+            'message': 'Coding question reviewed and published successfully.',
+            'question': QuestionAdminSerializer(question).data
+        }, status=status.HTTP_200_OK)
+
+

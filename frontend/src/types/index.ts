@@ -197,7 +197,14 @@ export interface StudyMaterialStructuredContent {
   introduction?: string;
   concept_explanation?: string;
   key_points?: string[];
+  key_takeaways?: string[];
   syntax?: string;
+  code_snippets?: Array<{
+    title?: string;
+    language?: string;
+    code: string;
+    explanation?: string;
+  }>;
   examples?: Array<{
     title: string;
     code: string;
@@ -225,6 +232,13 @@ export interface StudyMaterialStructuredContent {
     answer: string;
     explanation: string;
   }>;
+  self_check_questions?: Array<{
+    question: string;
+    options?: string[];
+    answer?: string;
+    explanation?: string;
+  }>;
+  [key: string]: any;
 }
 
 export interface StudyMaterial {
@@ -374,6 +388,7 @@ export interface Course {
   learning_goal?: string;
   prerequisites_text?: string;
   blueprint?: AssessmentBlueprint | null;
+  programming_language?: string | null;
 }
 
 export interface AISkillSuggestion {
@@ -464,14 +479,67 @@ export interface QuestionOption {
 export interface Question {
   id: number;
   text: string;
+  title?: string;
   topic_tag: string;
-  question_type: 'SINGLE_CHOICE' | 'MULTIPLE_CHOICE';
+  question_type: 'SINGLE_CHOICE' | 'MULTIPLE_CHOICE' | 'MCQ_SINGLE' | 'MCQ_MULTIPLE' | 'TRUE_FALSE' | 'CODING';
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
   marks: number;
   order: number;
   options: QuestionOption[];
   explanation?: string;
   is_bank_question?: boolean;
+  problem_statement?: string;
+  programming_language?: 'c' | 'cpp' | 'java' | 'python' | string;
+  input_format?: string;
+  output_format?: string;
+  constraints?: string;
+  sample_test_cases?: Array<{ input: string; output: string }>;
+  hidden_test_cases?: Array<{ input: string; output: string }>;
+  reference_solution?: string;
+}
+
+export interface SampleTestResult {
+  test_index: number;
+  input: string;
+  expected_output: string;
+  actual_output: string;
+  passed: boolean;
+  status: string;
+  error?: string | null;
+  execution_time_ms: number;
+}
+
+export interface RunCodeResponse {
+  mode: 'RUN_CODE';
+  language: string;
+  sample_passed: number;
+  sample_total: number;
+  all_sample_passed: boolean;
+  sample_results: SampleTestResult[];
+}
+
+export interface SubmitCodeResponse {
+  mode: 'SUBMIT_CODE';
+  language: string;
+  sample_passed: number;
+  sample_total: number;
+  hidden_passed: number;
+  hidden_total: number;
+  total_passed: number;
+  total_count: number;
+  passed: boolean;
+  status: 'PASSED' | 'FAILED';
+  sample_results: SampleTestResult[];
+  hidden_summary: {
+    passed_count: number;
+    total_count: number;
+    results: Array<{
+      test_index: number;
+      passed: boolean;
+      status: string;
+      execution_time_ms: number;
+    }>;
+  };
 }
 
 export interface QuestionBankItem {
@@ -635,6 +703,7 @@ export interface DetailedQuestionReview {
   question_id: number;
   order: number;
   question_text: string;
+  question_type?: 'SINGLE_CHOICE' | 'MULTIPLE_CHOICE' | 'MCQ_SINGLE' | 'MCQ_MULTIPLE' | 'TRUE_FALSE' | 'CODING' | string;
   topic_tag: string;
   topic_label: string;
   difficulty: string;
@@ -646,6 +715,11 @@ export interface DetailedQuestionReview {
   correct_answers: string[];
   explanation: string;
   ai_diagnosis?: AIMistakeDiagnosis | null;
+  submitted_code?: string;
+  code_language?: string;
+  test_cases_passed?: number;
+  total_test_cases?: number;
+  code_execution_details?: any;
 }
 
 export interface WeakAreaRecommendation {

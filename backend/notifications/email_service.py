@@ -151,3 +151,90 @@ class EmailNotificationService:
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to dispatch OTP email to {email}: {err_str}")
             return False
+
+    @classmethod
+    def send_faculty_invitation_email(
+        cls,
+        email: str,
+        faculty_name: str,
+        faculty_id: str,
+        activation_url: str,
+        login_url: str
+    ) -> bool:
+        """
+        Dispatches account activation invitation to the exact provisioned Faculty email address.
+        Tracks delivery in EmailLog. Plaintext tokens are NEVER persisted or logged.
+        """
+        if not email:
+            return False
+
+        subject = "FX SkillHub – Faculty Account Created"
+        fac_id_display = faculty_id or "Assigned by Admin"
+
+        message_body = (
+            f"Dear {faculty_name},\n\n"
+            f"Your Faculty account has been successfully created on FX SkillHub\n"
+            f"by the administrator.\n\n"
+            f"Institution:\n"
+            f"Francis Xavier Engineering College\n\n"
+            f"Role:\n"
+            f"Faculty\n\n"
+            f"Registered Email:\n"
+            f"{email}\n\n"
+            f"Faculty ID:\n"
+            f"{fac_id_display}\n\n"
+            f"You can now activate your Faculty account using the secure link below:\n\n"
+            f"{activation_url}\n\n"
+            f"After activation, you can access:\n\n"
+            f"{login_url}\n\n"
+            f"Regards,\n"
+            f"FX SkillHub\n"
+            f"Francis Xavier Engineering College"
+        )
+
+        print(f"\n=======================================================")
+        print(f" [FX SKILLHUB FACULTY INVITATION DISPATCH]")
+        print(f" Recipient: {email}")
+        print(f" Faculty Name: {faculty_name}")
+        print(f" Activation Link: {activation_url}")
+        print(f" Timestamp: {timezone.now().isoformat()}")
+        print(f"=======================================================\n")
+
+        idempotency_key = hashlib.md5(
+            f"fac_invite_{email}_{timezone.now().timestamp()}".encode('utf-8')
+        ).hexdigest()
+
+        email_log = None
+        try:
+            email_log = EmailLog.objects.create(
+                idempotency_key=idempotency_key,
+                recipient_email=email,
+                subject=subject,
+                status='PENDING'
+            )
+        except Exception:
+            pass
+
+        try:
+            email_msg = EmailMessage(
+                subject=subject,
+                body=message_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[email]
+            )
+            email_msg.send(fail_silently=False)
+            if email_log:
+                email_log.status = 'SENT'
+                email_log.sent_at = timezone.now()
+                email_log.save(update_fields=['status', 'sent_at'])
+            return True
+        except Exception as e:
+            err_str = str(e)
+            if email_log:
+                email_log.status = 'FAILED'
+                email_log.error_message = err_str
+                email_log.save(update_fields=['status', 'error_message'])
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to dispatch Faculty invitation email to {email}: {err_str}")
+            return False

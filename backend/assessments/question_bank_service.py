@@ -100,49 +100,92 @@ class QuestionBankService:
         # Gather all eligible questions for this assessment (from assessment + course question bank)
         course = assessment.course
         pool_qs = Question.objects.filter(
-            Q(assessment=assessment) | (Q(course=course, is_bank_question=True))
+            Q(assessment=assessment) | Q(course=course),
+            approval_status='APPROVED'
         ).distinct().prefetch_related('options')
 
         all_pool = list(pool_qs)
         if not all_pool:
             return [], {}
 
-        # Categorize by difficulty
+        # Check if course is a programming language course
+        course_prog_lang = course.get_programming_language() if hasattr(course, 'get_programming_language') else None
+        coding_question = None
+
+        # Course isolation: filter strictly for approved coding questions belonging to this course
+        coding_qs = Question.objects.filter(
+            Q(assessment=assessment) | Q(course=course),
+            question_type='CODING',
+            approval_status='APPROVED'
+        ).distinct()
+
+        if assessment.assessment_type == 'FINAL_ASSESSMENT' and (course_prog_lang or coding_qs.exists()):
+            if coding_qs.exists():
+                if course_prog_lang:
+                    lang_matched = coding_qs.filter(programming_language__iexact=course_prog_lang)
+                    if lang_matched.exists():
+                        coding_qs = lang_matched
+
+                # Requirement 10: Exactly ONE coding question - NEVER randomly select
+                if coding_qs.count() == 1:
+                    coding_question = coding_qs.first()
+                else:
+                    assess_q = coding_qs.filter(assessment=assessment)
+                    if assess_q.count() == 1:
+                        coding_question = assess_q.first()
+                    else:
+                        coding_question = coding_qs.order_by('order', 'id').first()
+
+        # Categorize MCQs by difficulty
         diff_map = {'EASY': [], 'MEDIUM': [], 'HARD': []}
-        for q in all_pool:
+        mcq_pool = [q for q in all_pool if q.question_type != 'CODING']
+
+        for q in mcq_pool:
             d = q.difficulty if q.difficulty in diff_map else 'EASY'
             diff_map[d].append(q)
 
-        # Calculate counts per difficulty according to blueprint
-        easy_target = int(round(target_count * diff_dist.get('EASY', 0.4)))
-        medium_target = int(round(target_count * diff_dist.get('MEDIUM', 0.5)))
-        hard_target = target_count - (easy_target + medium_target)
-
         selected_questions = []
 
-        def sample_difficulty(category: str, needed: int):
-            avail = diff_map[category]
-            random.shuffle(avail)
-            chosen = avail[:needed]
-            selected_questions.extend(chosen)
-            diff_map[category] = avail[len(chosen):]
-            return needed - len(chosen)
+        if mcq_pool:
+            # Calculate counts per difficulty according to blueprint
+            mcq_target = (target_count - 1) if coding_question else target_count
+            easy_target = int(round(mcq_target * diff_dist.get('EASY', 0.4)))
+            medium_target = int(round(mcq_target * diff_dist.get('MEDIUM', 0.5)))
+            hard_target = mcq_target - (easy_target + medium_target)
 
-        rem_easy = sample_difficulty('EASY', easy_target)
-        rem_med = sample_difficulty('MEDIUM', medium_target)
-        rem_hard = sample_difficulty('HARD', hard_target)
+            def sample_difficulty(category: str, needed: int):
+                avail = diff_map[category]
+                random.shuffle(avail)
+                chosen = avail[:needed]
+                selected_questions.extend(chosen)
+                diff_map[category] = avail[len(chosen):]
+                return needed - len(chosen)
 
-        shortfall = rem_easy + rem_med + rem_hard
-        if shortfall > 0:
-            remaining_pool = [q for q_list in diff_map.values() for q in q_list if q not in selected_questions]
-            random.shuffle(remaining_pool)
-            selected_questions.extend(remaining_pool[:shortfall])
+            rem_easy = sample_difficulty('EASY', easy_target)
+            rem_med = sample_difficulty('MEDIUM', medium_target)
+            rem_hard = sample_difficulty('HARD', hard_target)
+
+            shortfall = rem_easy + rem_med + rem_hard
+            if shortfall > 0:
+                remaining_pool = [q for q_list in diff_map.values() for q in q_list if q not in selected_questions]
+                random.shuffle(remaining_pool)
+                selected_questions.extend(remaining_pool[:shortfall])
+
+            if not selected_questions and mcq_pool:
+                selected_questions = list(mcq_pool[:mcq_target])
+
+            random.shuffle(selected_questions)
+
+        # If a coding question was selected, add exactly this 1 coding question to the attempt
+        if coding_question and coding_question not in selected_questions:
+            selected_questions.append(coding_question)
 
         if not selected_questions:
-            selected_questions = list(all_pool)
+            if coding_question:
+                selected_questions = [coding_question]
+            else:
+                selected_questions = list(all_pool)
 
-        # Shuffle selected questions order for this attempt
-        random.shuffle(selected_questions)
         selected_ids = [q.id for q in selected_questions]
 
         # Randomize options per question for this attempt

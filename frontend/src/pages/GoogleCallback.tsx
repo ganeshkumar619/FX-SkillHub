@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiClient } from '../api/client';
@@ -12,21 +12,53 @@ export const GoogleCallback: React.FC = () => {
   const [statusText, setStatusText] = useState('Verifying Google credentials...');
   const [error, setError] = useState<string | null>(null);
 
+  const processedRef = useRef(false);
+  const completedRef = useRef(false);
+
+  const redirectByRole = (role?: string) => {
+    if (role === 'ADMIN') {
+      navigate('/admin', { replace: true });
+    } else if (role === 'FACULTY' || role === 'MENTOR') {
+      navigate('/faculty', { replace: true });
+    } else {
+      navigate('/dashboard', { replace: true });
+    }
+  };
+
   useEffect(() => {
+    // Prevent duplicate processing in React StrictMode or subsequent renders
+    if (processedRef.current || completedRef.current) {
+      return;
+    }
+
+    const code = searchParams.get('code');
+    const googleError = searchParams.get('error');
+
+    if (googleError) {
+      setError(`Google authentication was cancelled or rejected: ${googleError}`);
+      return;
+    }
+
+    if (!code) {
+      // If user is already authenticated in this session, smoothly redirect
+      const existingToken = localStorage.getItem('fx_token');
+      const savedUserStr = localStorage.getItem('fx_user');
+      if (existingToken && savedUserStr) {
+        try {
+          const parsed = JSON.parse(savedUserStr);
+          redirectByRole(parsed.role);
+          return;
+        } catch {
+          // ignore parsing error
+        }
+      }
+      setError('No authorization code was received from Google.');
+      return;
+    }
+
+    processedRef.current = true;
+
     const processCallback = async () => {
-      const code = searchParams.get('code');
-      const googleError = searchParams.get('error');
-
-      if (googleError) {
-        setError(`Google authentication was cancelled or rejected: ${googleError}`);
-        return;
-      }
-
-      if (!code) {
-        setError('No authorization code was received from Google.');
-        return;
-      }
-
       try {
         setStatusText('Exchanging authorization code with FX SkillHub...');
         const redirectUri = window.location.origin + '/auth/google/callback';
@@ -35,19 +67,27 @@ export const GoogleCallback: React.FC = () => {
           redirect_uri: redirectUri,
         });
 
+        completedRef.current = true;
         login(res.data.token, res.data.user);
         setStatusText('Authentication successful! Redirecting...');
 
-        setTimeout(() => {
-          if (res.data.user.role === 'ADMIN') {
-            navigate('/admin', { replace: true });
-          } else if (res.data.user.role === 'MENTOR') {
-            navigate('/mentor', { replace: true });
-          } else {
-            navigate('/dashboard', { replace: true });
-          }
-        }, 800);
+        // Smooth immediate navigation based on institutional role
+        redirectByRole(res.data.user?.role);
       } catch (err: any) {
+        // If authentication already completed or token already saved in local storage, do not display false-positive error
+        if (completedRef.current || localStorage.getItem('fx_token')) {
+          const savedUserStr = localStorage.getItem('fx_user');
+          if (savedUserStr) {
+            try {
+              const parsed = JSON.parse(savedUserStr);
+              redirectByRole(parsed.role);
+              return;
+            } catch {
+              // ignore parsing error
+            }
+          }
+          return;
+        }
         setError(err.response?.data?.error || 'Failed to complete Google Sign-In.');
       }
     };

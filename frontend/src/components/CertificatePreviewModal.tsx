@@ -1,6 +1,22 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Certificate } from '../types';
 import { Download, ExternalLink, X, Award, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { apiClient } from '../api/client';
+
+interface CertificateBrandingConfig {
+  institution_name: string;
+  subtext: string;
+  accreditation_text: string;
+  signatory_1_title: string;
+  signatory_1_name: string;
+  signatory_2_title: string;
+  signatory_2_name: string;
+  watermark_enabled?: boolean;
+  watermark_opacity?: number;
+  horizontal_logo_url?: string;
+  circular_emblem_url?: string;
+  watermark_url?: string;
+}
 
 interface CertificatePreviewModalProps {
   certificate: Certificate | null;
@@ -15,7 +31,39 @@ export const CertificatePreviewModal: React.FC<CertificatePreviewModalProps> = (
   onClose,
   studentNameFallback = 'STUDENT'
 }) => {
+  const [brandingConfig, setBrandingConfig] = useState<CertificateBrandingConfig | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let isMounted = true;
+    apiClient.get<CertificateBrandingConfig>('/certificates/config/')
+      .then((res) => {
+        if (isMounted && res.data) {
+          setBrandingConfig(res.data);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
   if (!isOpen || !certificate) return null;
+
+  const institutionName = brandingConfig?.institution_name || 'FRANCIS XAVIER ENGINEERING COLLEGE';
+  const subtext = brandingConfig?.subtext || '(Autonomous)';
+  const accreditationText = brandingConfig?.accreditation_text ?? 'Approved by AICTE & Affiliated to Anna University';
+  const fullSubtext = accreditationText ? `${subtext} • ${accreditationText}` : subtext;
+
+  const sig1Title = brandingConfig?.signatory_1_title || 'Authorized Signatory';
+  const sig1Name = brandingConfig?.signatory_1_name || 'Francis Xavier Engineering College';
+  const sig2Title = brandingConfig?.signatory_2_title || 'Course Coordinator';
+  const sig2Name = brandingConfig?.signatory_2_name || 'Centre for Skills Development';
+  const isWatermarkEnabled = brandingConfig?.watermark_enabled ?? true;
+  const watermarkOpacity = brandingConfig?.watermark_opacity ?? 0.06;
+  const horizontalLogoUrl = brandingConfig?.horizontal_logo_url || '/fxec_logo.png';
+  const emblemUrl = brandingConfig?.circular_emblem_url || '/fxec_crest.png';
+  const watermarkUrl = brandingConfig?.watermark_url || '/fxec_crest.png';
 
   const certId = certificate.id || certificate.certificate_id || certificate.certificate_number;
   const certNumber = certificate.certificate_number || certId;
@@ -123,20 +171,25 @@ export const CertificatePreviewModal: React.FC<CertificatePreviewModalProps> = (
             </div>
 
             {/* Faint Center Institutional Watermark */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.06] z-0">
-              <img
-                src="/fxec_crest.png"
-                alt="Watermark"
-                className="w-72 h-72 sm:w-96 sm:h-96 object-contain"
-              />
-            </div>
+            {isWatermarkEnabled && (
+              <div 
+                className="absolute inset-0 flex items-center justify-center pointer-events-none z-0"
+                style={{ opacity: watermarkOpacity }}
+              >
+                <img
+                  src={watermarkUrl}
+                  alt="Watermark"
+                  className="w-72 h-72 sm:w-96 sm:h-96 object-contain"
+                />
+              </div>
+            )}
 
             {/* Top Institutional Header Row */}
             <div className="relative z-10 flex items-start justify-between gap-4 pb-3 sm:pb-5">
               {/* Left: Official Horizontal Logo */}
               <div className="w-48 sm:w-60 shrink-0">
                 <img
-                  src="/fxec_logo.png"
+                  src={horizontalLogoUrl}
                   alt="Francis Xavier Engineering College Logo"
                   className="h-10 sm:h-14 object-contain"
                   onError={(e) => {
@@ -156,10 +209,10 @@ export const CertificatePreviewModal: React.FC<CertificatePreviewModalProps> = (
               {/* Center: Exact Prominent Institution Title */}
               <div className="text-center flex-1 px-2 hidden sm:block">
                 <h1 className="text-sm sm:text-base font-extrabold text-[#0b1e3d] tracking-wider uppercase">
-                  FRANCIS XAVIER ENGINEERING COLLEGE
+                  {institutionName}
                 </h1>
                 <p className="text-[10px] sm:text-xs text-slate-600 font-medium">
-                  (Autonomous) • Accredited by NBA &amp; NAAC 'A' Grade • Affiliated to Anna University
+                  {fullSubtext}
                 </p>
                 <div className="w-48 h-[1px] bg-[#d4af37] mx-auto mt-1" />
               </div>
@@ -167,7 +220,7 @@ export const CertificatePreviewModal: React.FC<CertificatePreviewModalProps> = (
               {/* Right: Circular FXEC Emblem */}
               <div className="w-12 sm:w-16 h-12 sm:h-16 shrink-0 relative mr-4 sm:mr-6">
                 <img
-                  src="/fxec_crest.png"
+                  src={emblemUrl}
                   alt="FXEC Emblem"
                   className="w-full h-full object-contain rounded-full bg-white p-0.5 shadow-sm border border-slate-200"
                   onError={(e) => {
@@ -271,8 +324,8 @@ export const CertificatePreviewModal: React.FC<CertificatePreviewModalProps> = (
                 {/* Signatory 1 */}
                 <div className="text-center">
                   <div className="w-28 sm:w-36 h-[1px] bg-slate-400 mx-auto mb-1" />
-                  <p className="text-[10px] sm:text-xs font-bold text-[#0b1e3d]">Authorized Signatory</p>
-                  <p className="text-[8px] sm:text-[9px] text-slate-500">Francis Xavier Engineering College</p>
+                  <p className="text-[10px] sm:text-xs font-bold text-[#0b1e3d]">{sig1Title}</p>
+                  <p className="text-[8px] sm:text-[9px] text-slate-500">{sig1Name}</p>
                 </div>
 
                 {/* Center QR Code */}
@@ -296,8 +349,8 @@ export const CertificatePreviewModal: React.FC<CertificatePreviewModalProps> = (
                 {/* Signatory 2 */}
                 <div className="text-center">
                   <div className="w-28 sm:w-36 h-[1px] bg-slate-400 mx-auto mb-1" />
-                  <p className="text-[10px] sm:text-xs font-bold text-[#0b1e3d]">Course Coordinator</p>
-                  <p className="text-[8px] sm:text-[9px] text-slate-500">Centre for Skills Development</p>
+                  <p className="text-[10px] sm:text-xs font-bold text-[#0b1e3d]">{sig2Title}</p>
+                  <p className="text-[8px] sm:text-[9px] text-slate-500">{sig2Name}</p>
                 </div>
               </div>
             </div>

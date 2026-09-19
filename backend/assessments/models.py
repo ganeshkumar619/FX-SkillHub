@@ -51,6 +51,7 @@ class Question(models.Model):
         ('MCQ_SINGLE', 'Single Choice MCQ'),
         ('MCQ_MULTIPLE', 'Multiple Choice MCQ'),
         ('TRUE_FALSE', 'True / False'),
+        ('CODING', 'Programming Coding Question'),
     )
     DIFFICULTY_LEVELS = (
         ('EASY', 'Easy'),
@@ -67,6 +68,41 @@ class Question(models.Model):
     marks = models.PositiveIntegerField(default=1)
     explanation = models.TextField(blank=True, help_text="Pedagogical explanation shown post-submission")
     order = models.PositiveIntegerField(default=1)
+
+    # Coding Problem Specific Fields
+    title = models.CharField(max_length=255, blank=True, default='')
+    problem_statement = models.TextField(blank=True, default='')
+    programming_language = models.CharField(
+        max_length=16, 
+        blank=True, 
+        default='', 
+        choices=[('c', 'C'), ('cpp', 'C++'), ('java', 'Java'), ('python', 'Python')],
+        help_text="Required programming language for this coding problem"
+    )
+    input_format = models.TextField(blank=True, default='')
+    output_format = models.TextField(blank=True, default='')
+    constraints = models.TextField(blank=True, default='')
+    sample_test_cases = models.JSONField(
+        default=list, 
+        blank=True, 
+        help_text="Exactly 2 visible test cases: [{'input': '...', 'output': '...'}]"
+    )
+    hidden_test_cases = models.JSONField(
+        default=list, 
+        blank=True, 
+        help_text="Exactly 4 hidden test cases: [{'input': '...', 'output': '...'}]"
+    )
+    reference_solution = models.TextField(
+        blank=True, 
+        default='', 
+        help_text="Trusted reference solution for automated validation"
+    )
+    approval_status = models.CharField(
+        max_length=32,
+        default='APPROVED',
+        choices=[('DRAFT', 'Draft'), ('PENDING_REVIEW', 'Pending Review'), ('APPROVED', 'Approved')],
+        db_index=True
+    )
 
     # AI Quality Control & Bank Status
     is_bank_question = models.BooleanField(default=False, db_index=True, help_text="Member of the Course AI Question Bank pool")
@@ -183,28 +219,42 @@ class AssessmentAttempt(models.Model):
 
             ans = self.answers.filter(question=question).first()
             if ans:
-                correct_option_ids = set(question.options.filter(is_correct=True).values_list('id', flat=True))
-                selected_option_ids = set(ans.selected_options.values_list('id', flat=True))
-                
-                if question.question_type == 'MCQ_MULTIPLE':
-                    is_corr = bool(selected_option_ids and correct_option_ids == selected_option_ids)
+                if question.question_type == 'CODING':
+                    # Proportional scoring based on server-evaluated test cases
+                    if ans.total_test_cases > 0:
+                        ratio = ans.test_cases_passed / float(ans.total_test_cases)
+                        earned_for_q = round(ratio * q_marks, 1)
+                        ans.marks_obtained = earned_for_q
+                        ans.is_correct = (ans.test_cases_passed == ans.total_test_cases)
+                        total_earned += earned_for_q
+                        topic_stats[tag]['earned'] += earned_for_q
+                    else:
+                        ans.is_correct = False
+                        ans.marks_obtained = 0.0
+                    ans.save(update_fields=['is_correct', 'marks_obtained'])
                 else:
-                    # Single-choice MCQ & True/False: exactly one option selected matches exactly one correct option
-                    is_corr = bool(
-                        len(selected_option_ids) == 1 and
-                        len(correct_option_ids) == 1 and
-                        list(selected_option_ids)[0] == list(correct_option_ids)[0]
-                    )
+                    correct_option_ids = set(question.options.filter(is_correct=True).values_list('id', flat=True))
+                    selected_option_ids = set(ans.selected_options.values_list('id', flat=True))
+                    
+                    if question.question_type == 'MCQ_MULTIPLE':
+                        is_corr = bool(selected_option_ids and correct_option_ids == selected_option_ids)
+                    else:
+                        # Single-choice MCQ & True/False: exactly one option selected matches exactly one correct option
+                        is_corr = bool(
+                            len(selected_option_ids) == 1 and
+                            len(correct_option_ids) == 1 and
+                            list(selected_option_ids)[0] == list(correct_option_ids)[0]
+                        )
 
-                if is_corr:
-                    ans.is_correct = True
-                    ans.marks_obtained = float(q_marks)
-                    total_earned += q_marks
-                    topic_stats[tag]['earned'] += q_marks
-                else:
-                    ans.is_correct = False
-                    ans.marks_obtained = 0.0
-                ans.save(update_fields=['is_correct', 'marks_obtained'])
+                    if is_corr:
+                        ans.is_correct = True
+                        ans.marks_obtained = float(q_marks)
+                        total_earned += q_marks
+                        topic_stats[tag]['earned'] += q_marks
+                    else:
+                        ans.is_correct = False
+                        ans.marks_obtained = 0.0
+                    ans.save(update_fields=['is_correct', 'marks_obtained'])
 
         self.score = round(total_earned, 1)
         self.percentage = round((total_earned / total_possible * 100.0) if total_possible > 0 else 0.0, 1)
@@ -230,6 +280,13 @@ class StudentAnswer(models.Model):
     is_correct = models.BooleanField(default=False)
     marks_obtained = models.FloatField(default=0.0)
     answered_at = models.DateTimeField(auto_now=True)
+
+    # Coding Problem Specific Submission Details
+    submitted_code = models.TextField(blank=True, default='')
+    code_language = models.CharField(max_length=16, blank=True, default='')
+    test_cases_passed = models.PositiveSmallIntegerField(default=0)
+    total_test_cases = models.PositiveSmallIntegerField(default=0)
+    code_execution_details = models.JSONField(default=dict, blank=True)
 
     class Meta:
         unique_together = ('attempt', 'question')

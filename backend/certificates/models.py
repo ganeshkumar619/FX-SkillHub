@@ -111,7 +111,7 @@ class BrandingAsset(models.Model):
 class CertificateConfig(models.Model):
     institution_name = models.CharField(max_length=255, default="FRANCIS XAVIER ENGINEERING COLLEGE")
     subtext = models.CharField(max_length=255, default="(Autonomous)", blank=True)
-    accreditation_text = models.CharField(max_length=255, default="Accredited by NBA & NAAC 'A' Grade • Affiliated to Anna University", blank=True)
+    accreditation_text = models.CharField(max_length=255, default="Approved by AICTE & Affiliated to Anna University", blank=True)
     signatory_1_title = models.CharField(max_length=128, default="Authorized Signatory")
     signatory_1_name = models.CharField(max_length=128, blank=True, default="")
     signatory_2_title = models.CharField(max_length=128, default="Course Coordinator")

@@ -294,6 +294,7 @@ def calculate_course_progress(student_id: int, course_id: int) -> Dict[str, Any]
             'total_required_modules': 0,
             'completed_resources': 0,
             'total_required_resources': 0,
+            'remaining_resources': 0,
             'assessment_unlocked': False,
             'current_module_id': None,
             'current_resource_id': None,
@@ -452,12 +453,29 @@ def is_assessment_eligible(student_id: int, course_id: int) -> Dict[str, Any]:
             'reason': 'Enroll in the course to begin required learning activities.'
         }
 
+    # If course has 0 required modules, assessment is immediately accessible for enrolled student
+    req_mods = course.modules.filter(is_required=True, status='PUBLISHED').count()
+    if req_mods == 0:
+        return {
+            'eligible': True,
+            'is_eligible': True,
+            'can_start': True,
+            'course_progress': 100.0,
+            'completed_modules': 0,
+            'required_modules': 0,
+            'total_required_modules': 0,
+            'remaining_resources': 0,
+            'message': 'Final assessment unlocked.',
+            'reason': None
+        }
+
     summary = calculate_course_progress(student_id, course.id)
+    rem_res = summary.get('remaining_resources', 0)
     is_eligible = (
-        summary['is_completed'] and
-        summary['progress'] >= 100.0 and
-        summary['completed_modules'] == summary['total_required_modules'] and
-        summary['remaining_resources'] == 0
+        summary.get('is_completed', False) and
+        summary.get('progress', 0.0) >= 100.0 and
+        summary.get('completed_modules', 0) == summary.get('total_required_modules', 0) and
+        rem_res == 0
     )
 
     if is_eligible:
@@ -465,19 +483,19 @@ def is_assessment_eligible(student_id: int, course_id: int) -> Dict[str, Any]:
     else:
         msg = (
             f"Complete all required modules before starting the assessment. "
-            f"({summary['completed_modules']}/{summary['total_required_modules']} modules completed, "
-            f"{summary['remaining_resources']} required activities remaining)."
+            f"({summary.get('completed_modules', 0)}/{summary.get('total_required_modules', 0)} modules completed, "
+            f"{rem_res} required activities remaining)."
         )
 
     return {
         'eligible': is_eligible,
         'is_eligible': is_eligible,
         'can_start': is_eligible,
-        'course_progress': summary['progress'],
-        'completed_modules': summary['completed_modules'],
-        'required_modules': summary['total_required_modules'],
-        'total_required_modules': summary['total_required_modules'],
-        'remaining_resources': summary['remaining_resources'],
+        'course_progress': summary.get('progress', 0.0),
+        'completed_modules': summary.get('completed_modules', 0),
+        'required_modules': summary.get('total_required_modules', 0),
+        'total_required_modules': summary.get('total_required_modules', 0),
+        'remaining_resources': rem_res,
         'message': msg,
         'reason': msg if not is_eligible else None
     }
